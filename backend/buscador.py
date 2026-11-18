@@ -3,7 +3,13 @@ from typing import List, Dict, Optional
 import requests
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Lista de servidores públicos da Overpass API (com espelhos de redundância para evitar timeout)
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter"
+]
 
 # Cabeçalho obrigatório pela política de uso gratuito do OpenStreetMap
 HEADERS_OSM = {
@@ -83,7 +89,7 @@ def mapear_tags_nicho(nicho: str) -> str:
         if chave in termo:
             return filtro
 
-    # Caso não esteja no mapa, busca pelo nome ou qualquer estabelecimento comercial/serviço com o termo
+    # Caso não esteja no mapa, busca pelo nome ou qualquer estabelecimento correspondente
     return f'["name"~"{nicho.strip()}",i]'
 
 
@@ -96,8 +102,8 @@ def executar_busca_google_maps(
     api_key_override: Optional[str] = None,
 ) -> Dict:
     """
-    Mantém a mesma assinatura da função original para compatibilidade com o main.py,
-    mas realiza toda a mineração gratuitamente via OpenStreetMap (Overpass API).
+    Mantém a mesma assinatura para compatibilidade com o main.py,
+    realizando a mineração de forma gratuita via OpenStreetMap (Overpass API).
     """
     geo = obter_coordenadas_cidade(cidade)
     lat, lng = geo["lat"], geo["lng"]
@@ -105,9 +111,9 @@ def executar_busca_google_maps(
 
     filtro_osm = mapear_tags_nicho(nicho)
 
-    # Query Overpass QL buscando nós (nodes) e áreas (ways) no raio da cidade
+    # Query Overpass QL buscando nós e áreas no raio da cidade
     overpass_query = f"""
-    [out:json][timeout:25];
+    [out:json][timeout:35];
     (
       node{filtro_osm}(around:{raio_metros},{lat},{lng});
       way{filtro_osm}(around:{raio_metros},{lat},{lng});
@@ -115,15 +121,26 @@ def executar_busca_google_maps(
     out center {max_resultados * 2};
     """
 
-    resp = requests.post(
-        OVERPASS_URL,
-        data={"data": overpass_query},
-        headers=HEADERS_OSM,
-        timeout=30,
-    )
+    resp = None
+    erro_ultimo = None
 
-    if resp.status_code != 200:
-        raise ValueError(f"Erro na consulta Overpass API: HTTP {resp.status_code}")
+    # Tenta conectar nos servidores espelhos caso o principal esteja congestionado
+    for url in OVERPASS_URLS:
+        try:
+            resp = requests.post(
+                url,
+                data={"data": overpass_query},
+                headers=HEADERS_OSM,
+                timeout=45,
+            )
+            if resp.status_code == 200:
+                break
+        except Exception as e:
+            erro_ultimo = e
+            continue
+
+    if not resp or resp.status_code != 200:
+        raise ValueError(f"Erro ao consultar servidores Overpass: {erro_ultimo or 'Todos os espelhos falharam'}")
 
     dados = resp.json()
     elementos = dados.get("elements", [])
@@ -151,7 +168,6 @@ def executar_busca_google_maps(
             or ""
         )
 
-        # Monta o endereço a partir das tags disponíveis
         rua = tags.get("addr:street", "")
         numero = tags.get("addr:housenumber", "")
         bairro = tags.get("addr:suburb", "")

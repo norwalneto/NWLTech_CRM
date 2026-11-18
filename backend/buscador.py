@@ -2,14 +2,8 @@ import re
 from typing import List, Dict, Optional
 import requests
 
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-
-# Apenas os servidores estáveis com suporte IPv4 garantido
-OVERPASS_URLS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-]
+NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+PHOTON_SEARCH_URL = "https://photon.komoot.io/api/"
 
 HEADERS_OSM = {
     "User-Agent": "NWLTechCRM/1.0 (contato@nwltecnologia.site)"
@@ -27,7 +21,7 @@ def formatar_link_whatsapp(telefone: str) -> str:
 
 
 def obter_coordenadas_cidade(cidade: str) -> Dict:
-    """Localiza a cidade via Nominatim (OpenStreetMap) e obtém o osm_id da área."""
+    """Localiza o centro da cidade via Nominatim."""
     endereco_busca = cidade.strip()
     if "brasil" not in endereco_busca.lower():
         endereco_busca = f"{endereco_busca}, Brasil"
@@ -36,67 +30,139 @@ def obter_coordenadas_cidade(cidade: str) -> Dict:
         "q": endereco_busca,
         "format": "json",
         "limit": 1,
-        "addressdetails": 1,
     }
 
-    resp = requests.get(NOMINATIM_URL, params=params, headers=HEADERS_OSM, timeout=15)
+    resp = requests.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
     dados = resp.json()
 
     if not dados:
-        raise ValueError(f"OpenStreetMap não encontrou a cidade '{cidade}'.")
+        raise ValueError(f"Cidade '{cidade}' não encontrada.")
 
     resultado = dados[0]
-    
-    # Calcula o ID de área do Overpass se o resultado for uma relação administrativa
-    osm_type = resultado.get("osm_type", "")
-    osm_id = int(resultado.get("osm_id", 0))
-    area_id = None
-    if osm_type == "relation" and osm_id > 0:
-        area_id = 3600000000 + osm_id
-
     return {
         "lat": float(resultado["lat"]),
         "lng": float(resultado["lon"]),
-        "area_id": area_id,
         "endereco_formatado": resultado.get("display_name", cidade),
     }
 
 
-def mapear_tags_nicho(nicho: str) -> str:
-    """Mapeia palavras-chave em português para tags comerciais do OpenStreetMap."""
-    termo = nicho.lower().strip()
-    
-    mapa = {
-        "academia": '["leisure"="fitness_centre"]',
-        "clinica": '["amenity"~"clinic|doctors|dentist|hospital"]',
-        "clínica": '["amenity"~"clinic|doctors|dentist|hospital"]',
-        "dentista": '["amenity"="dentist"]',
-        "odontologia": '["amenity"="dentist"]',
-        "restaurante": '["amenity"~"restaurant|fast_food|cafe"]',
-        "pizzaria": '["amenity"="restaurant"]["cuisine"~"pizza",i]',
-        "farmacia": '["amenity"="pharmacy"]',
-        "farmácia": '["amenity"="pharmacy"]',
-        "oficina": '["shop"~"car_repair|tyres|car_parts"]',
-        "mecanica": '["shop"="car_repair"]',
-        "supermercado": '["shop"~"supermarket|convenience"]',
-        "mercado": '["shop"~"supermarket|convenience"]',
-        "padaria": '["shop"="bakery"]',
-        "salao": '["shop"~"hairdresser|beauty"]',
-        "salão": '["shop"~"hairdresser|beauty"]',
-        "barbearia": '["shop"="hairdresser"]',
-        "hotel": '["tourism"~"hotel|guest_house|hostel"]',
-        "pousada": '["tourism"~"guest_house|hotel"]',
-        "escola": '["amenity"~"school|kindergarten|language_school"]',
-        "pet": '["shop"="pet"]',
-        "petshop": '["shop"="pet"]',
-        "loja": '["shop"]',
+def buscar_via_photon(nicho: str, cidade: str, lat: float, lng: float, max_resultados: int) -> List[Dict]:
+    """Busca rápida de estabelecimentos comerciais usando o motor Photon (OpenStreetMap)."""
+    query = f"{nicho.strip()} {cidade.strip()}"
+    params = {
+        "q": query,
+        "lat": lat,
+        "lon": lng,
+        "limit": min(max_resultados * 2, 50),
     }
 
-    for chave, filtro in mapa.items():
-        if chave in termo:
-            return filtro
+    resp = requests.get(PHOTON_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
+    if resp.status_code != 200:
+        return []
 
-    return f'["name"~"{nicho.strip()}",i]'
+    dados = resp.json()
+    features = dados.get("features", [])
+    resultados = []
+
+    for feat in features:
+        props = feat.get("properties", {})
+        nome = props.get("name")
+        if not nome:
+            continue
+
+        # Filtra para garantir que pertence à cidade ou região próxima
+        cidade_item = (props.get("city") or props.get("county") or props.get("state") or "").lower()
+        if cidade.strip().lower() not in cidade_item and "pernambuco" not in cidade_item and cidade_item != "":
+            continue
+
+        rua = props.get("street", "")
+        numero = props.get("housenumber", "")
+        bairro = props.get("district") or props.get("suburb") or ""
+        cidade_final = props.get("city") or cidade.strip()
+
+        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade_final] if p]
+        endereco_completo = " - ".join(partes_end)
+
+        osm_id = f"photon_{props.get('osm_type', 'N')}_{props.get('osm_id', len(resultados))}"
+
+        resultados.append({
+            "place_id": osm_id,
+            "nome": nome,
+            "telefone": "",
+            "whatsapp_link": "",
+            "endereco": endereco_completo,
+            "cidade": cidade_final,
+            "nicho": nicho.strip(),
+            "website": "",
+            "tem_site": False,
+            "avaliacao": 0.0,
+            "total_avaliacoes": 0,
+            "status_kanban": "NOVO",
+        })
+
+    return resultados
+
+
+def buscar_via_nominatim(nicho: str, cidade: str, max_resultados: int) -> List[Dict]:
+    """Busca complementar diretamente no Nominatim com detalhes extras (telefone, site)."""
+    query = f"{nicho.strip()} em {cidade.strip()}, Brasil"
+    params = {
+        "q": query,
+        "format": "json",
+        "addressdetails": 1,
+        "extratags": 1,
+        "limit": min(max_resultados * 2, 40),
+    }
+
+    resp = requests.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
+    if resp.status_code != 200:
+        return []
+
+    dados = resp.json()
+    resultados = []
+
+    for item in dados:
+        nome = item.get("name")
+        if not nome:
+            continue
+
+        extratags = item.get("extratags", {}) or {}
+        address = item.get("address", {}) or {}
+
+        website = extratags.get("website") or extratags.get("contact:website") or extratags.get("url") or ""
+        telefone = (
+            extratags.get("phone")
+            or extratags.get("contact:phone")
+            or extratags.get("contact:whatsapp")
+            or ""
+        )
+
+        rua = address.get("road", "")
+        numero = address.get("house_number", "")
+        bairro = address.get("suburb") or address.get("neighbourhood") or ""
+        cidade_final = address.get("city") or address.get("town") or cidade.strip()
+
+        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade_final] if p]
+        endereco_completo = " - ".join(partes_end) or item.get("display_name", "")
+
+        osm_id = f"nom_{item.get('osm_type', 'node')}_{item.get('osm_id')}"
+
+        resultados.append({
+            "place_id": osm_id,
+            "nome": nome,
+            "telefone": telefone,
+            "whatsapp_link": formatar_link_whatsapp(telefone),
+            "endereco": endereco_completo,
+            "cidade": cidade_final,
+            "nicho": nicho.strip(),
+            "website": website,
+            "tem_site": bool(website),
+            "avaliacao": 0.0,
+            "total_avaliacoes": 0,
+            "status_kanban": "NOVO",
+        })
+
+    return resultados
 
 
 def executar_busca_google_maps(
@@ -108,106 +174,30 @@ def executar_busca_google_maps(
     api_key_override: Optional[str] = None,
 ) -> Dict:
     """
-    Executa a pesquisa ultrarrápida por área administrativa da cidade no OpenStreetMap.
+    Executa a pesquisa rápida combinando Nominatim (com tags de contato) e Photon API,
+    eliminando timeouts e erros 504 da Overpass API.
     """
     geo = obter_coordenadas_cidade(cidade)
     lat, lng = geo["lat"], geo["lng"]
-    area_id = geo.get("area_id")
-    filtro_osm = mapear_tags_nicho(nicho)
 
-    # Se encontrou o ID oficial do município, usa busca por área (instantânea).
-    # Caso contrário, usa um raio curto e seguro de no máximo 5km.
-    if area_id:
-        overpass_query = f"""
-        [out:json][timeout:25];
-        area({area_id})->.searchArea;
-        (
-          node{filtro_osm}(area.searchArea);
-          way{filtro_osm}(area.searchArea);
-        );
-        out center {max_resultados * 2};
-        """
-    else:
-        raio_metros = max(1000, min(int(raio_km) * 1000, 5000))
-        overpass_query = f"""
-        [out:json][timeout:25];
-        (
-          node{filtro_osm}(around:{raio_metros},{lat},{lng});
-          way{filtro_osm}(around:{raio_metros},{lat},{lng});
-        );
-        out center {max_resultados * 2};
-        """
+    # 1. Tenta primeiro pelo Nominatim (traz telefone e site quando cadastrados)
+    leads_brutos = buscar_via_nominatim(nicho, cidade, max_resultados)
 
-    resp = None
-    erro_ultimo = None
-
-    for url in OVERPASS_URLS:
-        try:
-            resp = requests.post(
-                url,
-                data={"data": overpass_query},
-                headers=HEADERS_OSM,
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                break
-            else:
-                erro_ultimo = f"HTTP {resp.status_code} em {url}"
-        except Exception as e:
-            erro_ultimo = str(e)
-            continue
-
-    if not resp or resp.status_code != 200:
-        raise ValueError(f"Falha nos servidores Overpass: {erro_ultimo}")
-
-    dados = resp.json()
-    elementos = dados.get("elements", [])
+    # 2. Complementa com o Photon API se vierem poucos resultados
+    if len(leads_brutos) < max_resultados:
+        leads_photon = buscar_via_photon(nicho, cidade, lat, lng, max_resultados)
+        nomes_existentes = {l["nome"].lower() for l in leads_brutos}
+        for lp in leads_photon:
+            if lp["nome"].lower() not in nomes_existentes:
+                leads_brutos.append(lp)
+                nomes_existentes.add(lp["nome"].lower())
 
     leads_coletados: List[Dict] = []
-
-    for el in elementos:
+    for lead in leads_brutos:
         if len(leads_coletados) >= max_resultados:
             break
-
-        tags = el.get("tags", {})
-        nome = tags.get("name")
-        if not nome:
+        if apenas_sem_site and lead["tem_site"]:
             continue
-
-        website = tags.get("website") or tags.get("contact:website") or tags.get("url") or ""
-        if apenas_sem_site and website:
-            continue
-
-        telefone = (
-            tags.get("phone")
-            or tags.get("contact:phone")
-            or tags.get("contact:whatsapp")
-            or tags.get("mobile")
-            or ""
-        )
-
-        rua = tags.get("addr:street", "")
-        numero = tags.get("addr:housenumber", "")
-        bairro = tags.get("addr:suburb", "")
-        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade.strip()] if p]
-        endereco_completo = " - ".join(partes_end)
-
-        osm_id = f"osm_{el.get('type', 'node')}_{el.get('id')}"
-
-        lead = {
-            "place_id": osm_id,
-            "nome": nome,
-            "telefone": telefone,
-            "whatsapp_link": formatar_link_whatsapp(telefone),
-            "endereco": endereco_completo,
-            "cidade": cidade.strip(),
-            "nicho": nicho.strip(),
-            "website": website,
-            "tem_site": bool(website),
-            "avaliacao": 0.0,
-            "total_avaliacoes": 0,
-            "status_kanban": "NOVO",
-        }
         leads_coletados.append(lead)
 
     return {

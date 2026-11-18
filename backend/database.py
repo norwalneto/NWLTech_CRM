@@ -88,6 +88,11 @@ Base = declarative_base()
 engine = None
 SessionLocal = None
 
+BANCO_CONECTADO = False
+TIPO_BANCO_ATIVO = "NENHUM (CSV / Memória)"
+ERRO_CONEXAO_BANCO = ""
+TABELA_LEADS_CRIADA = False
+
 
 class LeadModel(Base):
     __tablename__ = "leads"
@@ -136,8 +141,10 @@ def sincronizar_banco_para_csv():
 
 
 def init_storage():
-    """Inicializa o armazenamento dependendo se está na Nuvem ou Local."""
+    """Inicializa o armazenamento e força a criação das tabelas no banco conectado."""
     global engine, SessionLocal, DATABASE_URL
+    global BANCO_CONECTADO, TIPO_BANCO_ATIVO, ERRO_CONEXAO_BANCO, TABELA_LEADS_CRIADA
+
     DATABASE_URL = obter_url_banco_railway()
 
     if not ESTA_NA_NUVEM and not CSV_PATH.exists():
@@ -145,18 +152,38 @@ def init_storage():
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
             writer.writeheader()
 
-    if DATABASE_URL and SessionLocal is None:
+    if not DATABASE_URL:
+        BANCO_CONECTADO = False
+        TIPO_BANCO_ATIVO = "NENHUM (Variáveis de banco ausentes)"
+        ERRO_CONEXAO_BANCO = "Nenhuma URL ou credencial de MySQL/PostgreSQL encontrada nas variáveis de ambiente."
+        TABELA_LEADS_CRIADA = False
+        print(f"[AVISO] {ERRO_CONEXAO_BANCO}")
+        return
+
+    if engine is None or SessionLocal is None:
         try:
             engine = create_engine(DATABASE_URL, pool_pre_ping=True)
             SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
             Base.metadata.create_all(bind=engine)
+
+            BANCO_CONECTADO = True
+            ERRO_CONEXAO_BANCO = ""
+            TIPO_BANCO_ATIVO = (
+                "MySQL"
+                if "mysql" in DATABASE_URL
+                else ("PostgreSQL" if "postgres" in DATABASE_URL else "SQL")
+            )
+            TABELA_LEADS_CRIADA = True
+
             sincronizar_banco_para_csv()
-            tipo_banco = "MySQL" if "mysql" in DATABASE_URL else "PostgreSQL"
-            print(f"[OK] Conectado com sucesso ao {tipo_banco} no Railway!")
+            print(f"[OK] Conectado ao {TIPO_BANCO_ATIVO} e tabela 'leads' verificada/criada com sucesso!")
         except Exception as e:
-            print(f"[ERRO] Falha crítica ao conectar no banco do Railway: {e}")
+            BANCO_CONECTADO = False
+            TABELA_LEADS_CRIADA = False
+            ERRO_CONEXAO_BANCO = str(e)
             engine = None
             SessionLocal = None
+            print(f"[ERRO] Falha ao conectar ou criar tabelas no banco: {e}")
 
 
 def _ler_csv() -> List[Dict]:
@@ -182,7 +209,7 @@ def listar_leads(
     apenas_sem_site: bool = False,
 ) -> List[Dict]:
     init_storage()
-    
+
     # Se estiver na nuvem ou com banco ativo, lê direto do Banco de Dados
     if SessionLocal:
         try:
@@ -286,7 +313,11 @@ def salvar_novos_leads(novos_leads: List[Dict]) -> Dict[str, int]:
     return {"inseridos": inseridos, "duplicados_ignorados": ignorados}
 
 
-def atualizar_lead(lead_id: str, status_kanban: Optional[str] = None, observacoes: Optional[str] = None) -> Optional[Dict]:
+def atualizar_lead(
+    lead_id: str,
+    status_kanban: Optional[str] = None,
+    observacoes: Optional[str] = None,
+) -> Optional[Dict]:
     init_storage()
     lead_atualizado = None
 

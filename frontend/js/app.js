@@ -1,5 +1,5 @@
-// URL padrão do backend (substitua pela sua URL gerada no Railway)
-let API_URL = localStorage.getItem("nwl_backend_url") || "https://seu-app.up.railway.app";
+// URL padrão do backend
+let API_URL = localStorage.getItem("nwl_backend_url") || "https://nwltechcrm-production.up.railway.app";
 document.getElementById("config-backend-url").value = API_URL;
 
 // Testar conexão ao iniciar
@@ -12,7 +12,7 @@ function verificarConexao() {
     fetch(`${API_URL}/`)
         .then(res => res.json())
         .then(data => {
-            if(data.status === "online") {
+            if (data.status === "online") {
                 dot.className = "dot online";
                 text.innerText = "Online (Railway)";
                 carregarLeads();
@@ -27,10 +27,14 @@ function verificarConexao() {
 }
 
 function salvarConfiguracoes() {
-    const url = document.getElementById("config-backend-url").value.trim();
-    if(url) {
+    let url = document.getElementById("config-backend-url").value.trim();
+    if (url) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "https://" + url;
+        }
         API_URL = url.endsWith("/") ? url.slice(0, -1) : url;
         localStorage.setItem("nwl_backend_url", API_URL);
+        document.getElementById("config-backend-url").value = API_URL;
         alert("URL salva com sucesso!");
         verificarConexao();
     }
@@ -44,7 +48,7 @@ function mudarAba(abaId, elemento) {
     document.getElementById(`tab-${abaId}`).classList.add("active");
     elemento.classList.add("active");
 
-    if(abaId === 'kanban') {
+    if (abaId === 'kanban') {
         carregarLeads();
     }
 }
@@ -57,7 +61,7 @@ function executarBusca() {
     const max_resultados = document.getElementById("busca-max").value;
     const apenas_sem_site = document.getElementById("busca-sem-site").checked;
 
-    if(!nicho || !cidade) {
+    if (!nicho || !cidade) {
         alert("Preencha o nicho e a cidade.");
         return;
     }
@@ -65,18 +69,30 @@ function executarBusca() {
     const box = document.getElementById("busca-resultado-box");
     const msg = document.getElementById("busca-status-msg");
     box.classList.remove("hidden");
-    msg.innerText = "Minerando leads no Google Maps... Aguarde.";
+    msg.innerText = "Minerando leads... Aguarde.";
 
     fetch(`${API_URL}/api/buscar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nicho, cidade, raio_km: parseInt(raio_km), max_resultados: parseInt(max_resultados), apenas_sem_site })
+        body: JSON.stringify({
+            nicho,
+            cidade,
+            raio_km: parseInt(raio_km) || 10,
+            max_resultados: parseInt(max_resultados) || 20,
+            apenas_sem_site
+        })
     })
     .then(res => res.json())
     .then(data => {
-        if(data.sucesso) {
-            msg.innerText = `Busca concluída! ${data.novos_salvos} novos leads salvos.`;
-            carregarLeads();
+        if (data.sucesso) {
+            msg.innerText = `Busca concluída! ${data.novos_salvos} novos leads salvos (${data.duplicados_ignorados || 0} já existiam).`;
+            
+            // Renderiza imediatamente no Kanban usando a lista já devolvida pelo backend
+            if (Array.isArray(data.leads) && data.leads.length > 0) {
+                renderizarKanban(data.leads);
+            } else {
+                carregarLeads();
+            }
         } else {
             msg.innerText = "Erro na busca: " + (data.detail || "Desconhecido");
         }
@@ -87,50 +103,65 @@ function executarBusca() {
     });
 }
 
-// Carregar Kanban
+// Buscar leads do backend e atualizar Kanban
 function carregarLeads() {
     fetch(`${API_URL}/api/leads`)
         .then(res => res.json())
         .then(data => {
             const leads = data.leads || [];
-            
-            const colunas = {
-                "NOVO": document.getElementById("list-novo"),
-                "PENDENTE": document.getElementById("list-pendente"),
-                "CONTATO": document.getElementById("list-contato"),
-                "FECHADO": document.getElementById("list-fechado")
-            };
-
-            const contadores = { "NOVO": 0, "PENDENTE": 0, "CONTATO": 0, "FECHADO": 0 };
-
-            // Limpar colunas
-            Object.values(colunas).forEach(col => col.innerHTML = "");
-
-            leads.forEach(lead => {
-                const status = (lead.status_kanban || "NOVO").toUpperCase();
-                if(contadores[status] !== undefined) contadores[status]++;
-
-                const card = document.createElement("div");
-                card.className = "lead-card";
-                card.innerHTML = `
-                    <div class="lead-name">${lead.nome}</div>
-                    <div class="lead-info">${lead.cidade || ''} - ${lead.nicho || ''}</div>
-                    <div class="lead-actions">
-                        ${lead.whatsapp_link ? `<a href="${lead.whatsapp_link}" target="_blank" class="btn-whatsapp" style="padding:4px 8px; text-decoration:none; border-radius:4px; font-size:0.75rem;"><i class="fa-brands fa-whatsapp"></i></a>` : ''}
-                        <button class="btn-sm" onclick="mudarStatusLead('${lead.id}', 'PENDENTE')">Pend.</button>
-                        <button class="btn-sm" onclick="mudarStatusLead('${lead.id}', 'CONTATO')">Contato</button>
-                        <button class="btn-sm" onclick="mudarStatusLead('${lead.id}', 'FECHADO')">Fechado</button>
-                    </div>
-                `;
-                if(colunas[status]) colunas[status].appendChild(card);
-            });
-
-            document.getElementById("count-novo").innerText = contadores["NOVO"];
-            document.getElementById("count-pendente").innerText = contadores["PENDENTE"];
-            document.getElementById("count-contato").innerText = contadores["CONTATO"];
-            document.getElementById("count-fechado").innerText = contadores["FECHADO"];
+            renderizarKanban(leads);
         })
         .catch(err => console.error("Erro ao carregar leads:", err));
+}
+
+// Desenhar os cards nas colunas do Kanban
+function renderizarKanban(leads) {
+    const colunas = {
+        "NOVO": document.getElementById("list-novo"),
+        "PENDENTE": document.getElementById("list-pendente"),
+        "CONTATO": document.getElementById("list-contato"),
+        "FECHADO": document.getElementById("list-fechado")
+    };
+
+    const contadores = { "NOVO": 0, "PENDENTE": 0, "CONTATO": 0, "FECHADO": 0 };
+
+    // Limpar colunas antes de redesenhar
+    Object.values(colunas).forEach(col => {
+        if (col) col.innerHTML = "";
+    });
+
+    leads.forEach(lead => {
+        // Garante que qualquer status desconhecido ou vazio vá para NOVO
+        let status = (lead.status_kanban || "NOVO").toUpperCase().trim();
+        if (!colunas[status]) {
+            status = "NOVO";
+        }
+
+        contadores[status]++;
+        const leadId = lead.id || lead.place_id;
+
+        const card = document.createElement("div");
+        card.className = "lead-card";
+        card.innerHTML = `
+            <div class="lead-name">${lead.nome || 'Sem Nome'}</div>
+            <div class="lead-info">
+                ${lead.cidade || ''} ${lead.nicho ? '• ' + lead.nicho : ''}<br>
+                ${lead.telefone ? `<span style="color: var(--accent-green);"><i class="fa-solid fa-phone"></i> ${lead.telefone}</span>` : '<span style="opacity:0.6;">Sem telefone cadastrado</span>'}
+            </div>
+            <div class="lead-actions">
+                ${lead.whatsapp_link ? `<a href="${lead.whatsapp_link}" target="_blank" class="btn-whatsapp" style="padding:4px 8px; text-decoration:none; border-radius:4px; font-size:0.75rem;"><i class="fa-brands fa-whatsapp"></i></a>` : ''}
+                ${status !== 'PENDENTE' ? `<button class="btn-sm" onclick="mudarStatusLead('${leadId}', 'PENDENTE')">Pend.</button>` : ''}
+                ${status !== 'CONTATO' ? `<button class="btn-sm" onclick="mudarStatusLead('${leadId}', 'CONTATO')">Contato</button>` : ''}
+                ${status !== 'FECHADO' ? `<button class="btn-sm" onclick="mudarStatusLead('${leadId}', 'FECHADO')">Fechado</button>` : ''}
+            </div>
+        `;
+        colunas[status].appendChild(card);
+    });
+
+    document.getElementById("count-novo").innerText = contadores["NOVO"];
+    document.getElementById("count-pendente").innerText = contadores["PENDENTE"];
+    document.getElementById("count-contato").innerText = contadores["CONTATO"];
+    document.getElementById("count-fechado").innerText = contadores["FECHADO"];
 }
 
 function mudarStatusLead(leadId, novoStatus) {
@@ -149,7 +180,7 @@ function enviarMensagemWhatsApp() {
     const telefone = document.getElementById("chat-telefone").value;
     const mensagem = document.getElementById("chat-mensagem").value;
 
-    if(!telefone || !mensagem) {
+    if (!telefone || !mensagem) {
         alert("Preencha o telefone e a mensagem.");
         return;
     }
@@ -161,7 +192,7 @@ function enviarMensagemWhatsApp() {
     })
     .then(res => res.json())
     .then(data => {
-        if(data.sucesso) {
+        if (data.sucesso) {
             alert("Mensagem enviada com sucesso pela API do WhatsApp!");
             document.getElementById("chat-mensagem").value = "";
         } else {

@@ -1,12 +1,14 @@
-import os
 import re
-import time
 from typing import List, Dict, Optional
 import requests
 
-GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
-TEXTSEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Cabeçalho obrigatório pela política de uso gratuito do OpenStreetMap
+HEADERS_OSM = {
+    "User-Agent": "NWLTechCRM/1.0 (contato@nwltecnologia.site)"
+}
 
 
 def formatar_link_whatsapp(telefone: str) -> str:
@@ -19,52 +21,70 @@ def formatar_link_whatsapp(telefone: str) -> str:
     return f"https://wa.me/{digitos}"
 
 
-def obter_coordenadas_cidade(cidade: str, api_key: str) -> Dict:
-    """Localiza o centro da cidade via Geocoding API sem precisar especificar bairro."""
+def obter_coordenadas_cidade(cidade: str) -> Dict:
+    """Localiza o centro da cidade via Nominatim (OpenStreetMap) sem precisar de API Key."""
     endereco_busca = cidade.strip()
-    if "brasil" not in endereco_busca.lower() and "br" not in endereco_busca.lower():
+    if "brasil" not in endereco_busca.lower():
         endereco_busca = f"{endereco_busca}, Brasil"
 
     params = {
-        "address": endereco_busca,
-        "language": "pt-BR",
-        "region": "br",
-        "key": api_key,
+        "q": endereco_busca,
+        "format": "json",
+        "limit": 1,
+        "addressdetails": 1,
     }
 
-    resp = requests.get(GEOCODE_URL, params=params, timeout=15)
+    resp = requests.get(NOMINATIM_URL, params=params, headers=HEADERS_OSM, timeout=15)
     dados = resp.json()
 
-    if dados.get("status") != "OK" or not dados.get("results"):
-        raise ValueError(
-            f"Geocoding não encontrou a cidade '{cidade}'. Status: {dados.get('status')} - {dados.get('error_message', '')}"
-        )
+    if not dados:
+        raise ValueError(f"OpenStreetMap não encontrou a cidade '{cidade}'.")
 
-    resultado = dados["results"][0]
-    loc = resultado["geometry"]["location"]
+    resultado = dados[0]
     return {
-        "lat": loc["lat"],
-        "lng": loc["lng"],
-        "endereco_formatado": resultado.get("formatted_address", cidade),
+        "lat": float(resultado["lat"]),
+        "lng": float(resultado["lon"]),
+        "endereco_formatado": resultado.get("display_name", cidade),
     }
 
 
-def obter_detalhes_lugar(place_id: str, api_key: str) -> Dict:
-    """Consulta telefone e site do estabelecimento na Place Details API."""
-    params = {
-        "place_id": place_id,
-        "fields": "name,formatted_phone_number,international_phone_number,website,formatted_address,rating,user_ratings_total",
-        "language": "pt-BR",
-        "key": api_key,
+def mapear_tags_nicho(nicho: str) -> str:
+    """Mapeia palavras-chave em português para tags comerciais do OpenStreetMap."""
+    termo = nicho.lower().strip()
+    
+    # Mapeamento inteligente de nichos comuns no Brasil
+    mapa = {
+        "academia": '["leisure"="fitness_centre"]',
+        "clinica": '["amenity"~"clinic|doctors|dentist|hospital"]',
+        "clínica": '["amenity"~"clinic|doctors|dentist|hospital"]',
+        "dentista": '["amenity"="dentist"]',
+        "odontologia": '["amenity"="dentist"]',
+        "restaurante": '["amenity"~"restaurant|fast_food|cafe"]',
+        "pizzaria": '["amenity"="restaurant"]["cuisine"~"pizza",i]',
+        "farmacia": '["amenity"="pharmacy"]',
+        "farmácia": '["amenity"="pharmacy"]',
+        "oficina": '["shop"~"car_repair|tyres|car_parts"]',
+        "mecanica": '["shop"="car_repair"]',
+        "supermercado": '["shop"~"supermarket|convenience"]',
+        "mercado": '["shop"~"supermarket|convenience"]',
+        "padaria": '["shop"="bakery"]',
+        "salao": '["shop"~"hairdresser|beauty"]',
+        "salão": '["shop"~"hairdresser|beauty"]',
+        "barbearia": '["shop"="hairdresser"]',
+        "hotel": '["tourism"~"hotel|guest_house|hostel"]',
+        "pousada": '["tourism"~"guest_house|hotel"]',
+        "escola": '["amenity"~"school|kindergarten|language_school"]',
+        "pet": '["shop"="pet"]',
+        "petshop": '["shop"="pet"]',
+        "loja": '["shop"]',
     }
-    try:
-        resp = requests.get(DETAILS_URL, params=params, timeout=12)
-        dados = resp.json()
-        if dados.get("status") == "OK":
-            return dados.get("result", {})
-    except Exception as e:
-        print(f"[AVISO] Falha ao buscar detalhes do place_id {place_id}: {e}")
-    return {}
+
+    for chave, filtro in mapa.items():
+        if chave in termo:
+            return filtro
+
+    # Caso não esteja no mapa, busca pelo nome ou qualquer estabelecimento comercial/serviço com o termo
+    return f'["name"~"{nicho.strip()}",i]'
 
 
 def executar_busca_google_maps(
@@ -75,88 +95,86 @@ def executar_busca_google_maps(
     apenas_sem_site: bool = False,
     api_key_override: Optional[str] = None,
 ) -> Dict:
-    """Busca estabelecimentos pela palavra-chave em toda a cidade informada."""
-    api_key = (api_key_override or os.getenv("GOOGLE_MAPS_API_KEY", "")).strip()
-    if not api_key:
-        raise ValueError(
-            "GOOGLE_MAPS_API_KEY não configurada no arquivo .env ou nas variáveis do Railway."
-        )
-
-    geo = obter_coordenadas_cidade(cidade, api_key)
+    """
+    Mantém a mesma assinatura da função original para compatibilidade com o main.py,
+    mas realiza toda a mineração gratuitamente via OpenStreetMap (Overpass API).
+    """
+    geo = obter_coordenadas_cidade(cidade)
     lat, lng = geo["lat"], geo["lng"]
     raio_metros = max(1000, min(int(raio_km) * 1000, 50000))
 
-    query_texto = f"{nicho.strip()} em {cidade.strip()}"
-    params = {
-        "query": query_texto,
-        "location": f"{lat},{lng}",
-        "radius": raio_metros,
-        "language": "pt-BR",
-        "region": "br",
-        "key": api_key,
-    }
+    filtro_osm = mapear_tags_nicho(nicho)
+
+    # Query Overpass QL buscando nós (nodes) e áreas (ways) no raio da cidade
+    overpass_query = f"""
+    [out:json][timeout:25];
+    (
+      node{filtro_osm}(around:{raio_metros},{lat},{lng});
+      way{filtro_osm}(around:{raio_metros},{lat},{lng});
+    );
+    out center {max_resultados * 2};
+    """
+
+    resp = requests.post(
+        OVERPASS_URL,
+        data={"data": overpass_query},
+        headers=HEADERS_OSM,
+        timeout=30,
+    )
+
+    if resp.status_code != 200:
+        raise ValueError(f"Erro na consulta Overpass API: HTTP {resp.status_code}")
+
+    dados = resp.json()
+    elementos = dados.get("elements", [])
 
     leads_coletados: List[Dict] = []
-    proximo_token = None
 
-    while len(leads_coletados) < max_resultados:
-        if proximo_token:
-            time.sleep(2)
-            params = {"pagetoken": proximo_token, "key": api_key}
-
-        resp = requests.get(TEXTSEARCH_URL, params=params, timeout=15)
-        dados = resp.json()
-        status = dados.get("status")
-
-        if status not in ("OK", "ZERO_RESULTS"):
-            raise ValueError(
-                f"Erro na Places API: {status} - {dados.get('error_message', '')}"
-            )
-
-        resultados = dados.get("results", [])
-        if not resultados:
+    for el in elementos:
+        if len(leads_coletados) >= max_resultados:
             break
 
-        for item in resultados:
-            if len(leads_coletados) >= max_resultados:
-                break
+        tags = el.get("tags", {})
+        nome = tags.get("name")
+        if not nome:
+            continue
 
-            place_id = item.get("place_id")
-            if not place_id:
-                continue
+        website = tags.get("website") or tags.get("contact:website") or tags.get("url") or ""
+        if apenas_sem_site and website:
+            continue
 
-            detalhes = obter_detalhes_lugar(place_id, api_key)
-            website = detalhes.get("website", "") or ""
+        telefone = (
+            tags.get("phone")
+            or tags.get("contact:phone")
+            or tags.get("contact:whatsapp")
+            or tags.get("mobile")
+            or ""
+        )
 
-            if apenas_sem_site and website:
-                continue
+        # Monta o endereço a partir das tags disponíveis
+        rua = tags.get("addr:street", "")
+        numero = tags.get("addr:housenumber", "")
+        bairro = tags.get("addr:suburb", "")
+        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade.strip()] if p]
+        endereco_completo = " - ".join(partes_end)
 
-            telefone = (
-                detalhes.get("formatted_phone_number")
-                or detalhes.get("international_phone_number")
-                or ""
-            )
-            nome = detalhes.get("name") or item.get("name") or "Sem Nome"
+        osm_id = f"osm_{el.get('type', 'node')}_{el.get('id')}"
 
-            lead = {
-                "place_id": place_id,
-                "nome": nome,
-                "telefone": telefone,
-                "whatsapp_link": formatar_link_whatsapp(telefone),
-                "endereco": detalhes.get("formatted_address") or item.get("formatted_address") or "",
-                "cidade": cidade.strip(),
-                "nicho": nicho.strip(),
-                "website": website,
-                "tem_site": bool(website),
-                "avaliacao": detalhes.get("rating") or item.get("rating") or 0.0,
-                "total_avaliacoes": detalhes.get("user_ratings_total") or item.get("user_ratings_total") or 0,
-                "status_kanban": "NOVO",
-            }
-            leads_coletados.append(lead)
-
-        proximo_token = dados.get("next_page_token")
-        if not proximo_token:
-            break
+        lead = {
+            "place_id": osm_id,
+            "nome": nome,
+            "telefone": telefone,
+            "whatsapp_link": formatar_link_whatsapp(telefone),
+            "endereco": endereco_completo,
+            "cidade": cidade.strip(),
+            "nicho": nicho.strip(),
+            "website": website,
+            "tem_site": bool(website),
+            "avaliacao": 0.0,
+            "total_avaliacoes": 0,
+            "status_kanban": "NOVO",
+        }
+        leads_coletados.append(lead)
 
     return {
         "coordenadas_cidade": geo,

@@ -4,14 +4,13 @@ import requests
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
-# Lista de servidores públicos da Overpass API (com espelhos de redundância para evitar timeout)
+# Apenas os servidores estáveis com suporte IPv4 garantido
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://z.overpass-api.de/api/interpreter"
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
 ]
 
-# Cabeçalho obrigatório pela política de uso gratuito do OpenStreetMap
 HEADERS_OSM = {
     "User-Agent": "NWLTechCRM/1.0 (contato@nwltecnologia.site)"
 }
@@ -28,7 +27,7 @@ def formatar_link_whatsapp(telefone: str) -> str:
 
 
 def obter_coordenadas_cidade(cidade: str) -> Dict:
-    """Localiza o centro da cidade via Nominatim (OpenStreetMap) sem precisar de API Key."""
+    """Localiza a cidade via Nominatim (OpenStreetMap) e obtém o osm_id da área."""
     endereco_busca = cidade.strip()
     if "brasil" not in endereco_busca.lower():
         endereco_busca = f"{endereco_busca}, Brasil"
@@ -47,9 +46,18 @@ def obter_coordenadas_cidade(cidade: str) -> Dict:
         raise ValueError(f"OpenStreetMap não encontrou a cidade '{cidade}'.")
 
     resultado = dados[0]
+    
+    # Calcula o ID de área do Overpass se o resultado for uma relação administrativa
+    osm_type = resultado.get("osm_type", "")
+    osm_id = int(resultado.get("osm_id", 0))
+    area_id = None
+    if osm_type == "relation" and osm_id > 0:
+        area_id = 3600000000 + osm_id
+
     return {
         "lat": float(resultado["lat"]),
         "lng": float(resultado["lon"]),
+        "area_id": area_id,
         "endereco_formatado": resultado.get("display_name", cidade),
     }
 
@@ -58,7 +66,6 @@ def mapear_tags_nicho(nicho: str) -> str:
     """Mapeia palavras-chave em português para tags comerciais do OpenStreetMap."""
     termo = nicho.lower().strip()
     
-    # Mapeamento inteligente de nichos comuns no Brasil
     mapa = {
         "academia": '["leisure"="fitness_centre"]',
         "clinica": '["amenity"~"clinic|doctors|dentist|hospital"]',
@@ -89,58 +96,69 @@ def mapear_tags_nicho(nicho: str) -> str:
         if chave in termo:
             return filtro
 
-    # Caso não esteja no mapa, busca pelo nome ou qualquer estabelecimento correspondente
     return f'["name"~"{nicho.strip()}",i]'
 
 
 def executar_busca_google_maps(
     nicho: str,
     cidade: str,
-    raio_km: int = 15,
+    raio_km: int = 10,
     max_resultados: int = 20,
     apenas_sem_site: bool = False,
     api_key_override: Optional[str] = None,
 ) -> Dict:
     """
-    Mantém a mesma assinatura para compatibilidade com o main.py,
-    realizando a mineração de forma gratuita via OpenStreetMap (Overpass API).
+    Executa a pesquisa ultrarrápida por área administrativa da cidade no OpenStreetMap.
     """
     geo = obter_coordenadas_cidade(cidade)
     lat, lng = geo["lat"], geo["lng"]
-    raio_metros = max(1000, min(int(raio_km) * 1000, 50000))
-
+    area_id = geo.get("area_id")
     filtro_osm = mapear_tags_nicho(nicho)
 
-    # Query Overpass QL buscando nós e áreas no raio da cidade
-    overpass_query = f"""
-    [out:json][timeout:35];
-    (
-      node{filtro_osm}(around:{raio_metros},{lat},{lng});
-      way{filtro_osm}(around:{raio_metros},{lat},{lng});
-    );
-    out center {max_resultados * 2};
-    """
+    # Se encontrou o ID oficial do município, usa busca por área (instantânea).
+    # Caso contrário, usa um raio curto e seguro de no máximo 5km.
+    if area_id:
+        overpass_query = f"""
+        [out:json][timeout:25];
+        area({area_id})->.searchArea;
+        (
+          node{filtro_osm}(area.searchArea);
+          way{filtro_osm}(area.searchArea);
+        );
+        out center {max_resultados * 2};
+        """
+    else:
+        raio_metros = max(1000, min(int(raio_km) * 1000, 5000))
+        overpass_query = f"""
+        [out:json][timeout:25];
+        (
+          node{filtro_osm}(around:{raio_metros},{lat},{lng});
+          way{filtro_osm}(around:{raio_metros},{lat},{lng});
+        );
+        out center {max_resultados * 2};
+        """
 
     resp = None
     erro_ultimo = None
 
-    # Tenta conectar nos servidores espelhos caso o principal esteja congestionado
     for url in OVERPASS_URLS:
         try:
             resp = requests.post(
                 url,
                 data={"data": overpass_query},
                 headers=HEADERS_OSM,
-                timeout=45,
+                timeout=30,
             )
             if resp.status_code == 200:
                 break
+            else:
+                erro_ultimo = f"HTTP {resp.status_code} em {url}"
         except Exception as e:
-            erro_ultimo = e
+            erro_ultimo = str(e)
             continue
 
     if not resp or resp.status_code != 200:
-        raise ValueError(f"Erro ao consultar servidores Overpass: {erro_ultimo or 'Todos os espelhos falharam'}")
+        raise ValueError(f"Falha nos servidores Overpass: {erro_ultimo}")
 
     dados = resp.json()
     elementos = dados.get("elements", [])

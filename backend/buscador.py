@@ -2,12 +2,11 @@ import math
 import os
 import re
 from typing import Dict, List, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 import requests
 
 MAPBOX_GEOCODING_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places"
-MAPBOX_SEARCHBOX_URL = "https://api.mapbox.com/search/searchbox/v1/forward"
 
 
 def formatar_link_whatsapp(telefone: Optional[str]) -> str:
@@ -35,6 +34,17 @@ def _calcular_distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -
     return 2 * raio_terra_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _deslocar_coordenada(
+    lat: float, lng: float, dist_km: float, angulo_graus: float
+) -> tuple[float, float]:
+    """Desloca um ponto (lat, lng) por dist_km em determinado ângulo para varrer o raio."""
+    rad = math.radians(angulo_graus)
+    d_lat = (dist_km / 111.32) * math.cos(rad)
+    cos_lat = max(math.cos(math.radians(lat)), 0.1)
+    d_lng = (dist_km / (111.32 * cos_lat)) * math.sin(rad)
+    return lat + d_lat, lng + d_lng
+
+
 def _obter_token_mapbox(api_key_override: Optional[str] = None) -> str:
     """Obtém o token da Mapbox a partir do override ou das variáveis de ambiente."""
     token = (
@@ -55,7 +65,8 @@ def obter_coordenadas_cidade(cidade: str, token: str) -> Dict:
     if not cidade_limpa:
         raise ValueError("Cidade não informada.")
 
-    url = f"{MAPBOX_GEOCODING_URL}/{quote_plus(cidade_limpa)}.json"
+    termo_codificado = quote(f"{cidade_limpa}, Brasil", safe="")
+    url = f"{MAPBOX_GEOCODING_URL}/{termo_codificado}.json"
     params = {
         "access_token": token,
         "country": "br",
@@ -84,14 +95,11 @@ def obter_coordenadas_cidade(cidade: str, token: str) -> Dict:
 
 
 def _extrair_telefone(props: Dict) -> str:
-    """Extrai telefone caso a feature da Mapbox traga informação de contato."""
-    metadata = props.get("metadata") or {}
+    """Extrai telefone caso a feature retorne algum campo de contato."""
     candidatos = [
         props.get("phone"),
         props.get("tel"),
         props.get("contact_phone"),
-        metadata.get("phone"),
-        metadata.get("tel"),
     ]
     for cand in candidatos:
         if cand and str(cand).strip():
@@ -100,13 +108,10 @@ def _extrair_telefone(props: Dict) -> str:
 
 
 def _extrair_website(props: Dict) -> str:
-    """Extrai website caso a feature da Mapbox traga URL."""
-    metadata = props.get("metadata") or {}
+    """Extrai website caso a feature retorne URL."""
     candidatos = [
         props.get("website"),
         props.get("url"),
-        metadata.get("website"),
-        metadata.get("url"),
     ]
     for cand in candidatos:
         if cand and str(cand).strip():
@@ -115,6 +120,36 @@ def _extrair_website(props: Dict) -> str:
                 url = "https://" + url
             return url
     return ""
+
+
+def _extrair_cidade_feature(feat: Dict, cidade_padrao: str) -> str:
+    """Extrai a cidade a partir do contexto da Mapbox."""
+    for ctx in feat.get("context") or []:
+        ctx_id = str(ctx.get("id") or "")
+        if ctx_id.startswith("place.") or ctx_id.startswith("locality."):
+            if ctx.get("text"):
+                return str(ctx.get("text")).strip()
+    return cidade_padrao.strip()
+
+
+def _montar_pontos_varredura(
+    lat: float, lng: float, raio_max: float, alvo: int
+) -> List[tuple[float, float]]:
+    """Gera o ponto central e pontos deslocados dentro do raio para ampliar a coleta."""
+    pontos = [(lat, lng)]
+    if alvo <= 10:
+        return pontos
+
+    passo_proximo = max(1.5, min(raio_max * 0.35, 5.0))
+    for angulo in (0, 60, 120, 180, 240, 300):
+        pontos.append(_deslocar_coordenada(lat, lng, passo_proximo, angulo))
+
+    if alvo > 20 and raio_max >= 5.0:
+        passo_afastado = min(raio_max * 0.75, max(passo_proximo * 1.8, 6.0))
+        for angulo in (30, 90, 150, 210, 270, 330):
+            pontos.append(_deslocar_coordenada(lat, lng, passo_afastado, angulo))
+
+    return pontos
 
 
 def buscar_via_mapbox(
@@ -127,86 +162,92 @@ def buscar_via_mapbox(
     apenas_sem_site: bool = False,
     token: str = "",
 ) -> List[Dict]:
-    """Busca estabelecimentos e clínicas na Mapbox Search Box API."""
-    limite_api = max(1, min(int(max_resultados or 20), 25))
-    raio_max = float(raio_km or 15)
+    """
+    Busca POIs/estabelecimentos na Mapbox Geocoding API varrendo pontos dentro do raio
+    para alcançar mais resultados sem disparar erro 400.
+    """
+    alvo = max(1, min(int(max_resultados or 20), 60))
+    raio_max = max(1.0, float(raio_km or 15))
+    pontos_busca = _montar_pontos_varredura(lat, lng, raio_max, alvo)
 
-    params = {
-        "q": f"{nicho.strip()} {cidade.strip()}",
-        "access_token": token,
-        "language": "pt",
-        "country": "BR",
-        "proximity": f"{lng},{lat}",
-        "limit": limite_api,
-    }
+    termo_busca = f"{nicho.strip()} {cidade.strip()}".strip()
+    termo_codificado = quote(termo_busca, safe="")
 
-    resp = requests.get(MAPBOX_SEARCHBOX_URL, params=params, timeout=20)
-    resp.raise_for_status()
-    payload = resp.json()
-
-    features = payload.get("features") or []
     leads_formatados: List[Dict] = []
     ids_vistos = set()
 
-    for feat in features:
-        props = feat.get("properties") or {}
-        geom = feat.get("geometry") or {}
-        coords = geom.get("coordinates") or []
+    for p_lat, p_lng in pontos_busca:
+        if len(leads_formatados) >= alvo:
+            break
 
-        if len(coords) >= 2:
-            lon_item, lat_item = float(coords[0]), float(coords[1])
-            distancia = _calcular_distancia_km(lat, lng, lat_item, lon_item)
-            if distancia > raio_max:
+        url = f"{MAPBOX_GEOCODING_URL}/{termo_codificado}.json"
+        params = {
+            "access_token": token,
+            "country": "br",
+            "types": "poi",
+            "language": "pt",
+            "proximity": f"{p_lng:.6f},{p_lat:.6f}",
+            "limit": 10,
+        }
+
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        features = payload.get("features") or []
+        for feat in features:
+            props = feat.get("properties") or {}
+            geom = feat.get("geometry") or {}
+            coords = geom.get("coordinates") or []
+
+            if len(coords) >= 2:
+                lon_item, lat_item = float(coords[0]), float(coords[1])
+                distancia = _calcular_distancia_km(lat, lng, lat_item, lon_item)
+                if distancia > raio_max:
+                    continue
+
+            nome = (feat.get("text") or props.get("name") or "").strip()
+            if not nome:
                 continue
 
-        nome = (props.get("name") or props.get("name_preferred") or "").strip()
-        if not nome:
-            continue
+            mapbox_id = str(feat.get("id") or "").strip()
+            chave_unica = mapbox_id or f"{nome.lower()}|{coords}"
+            if chave_unica in ids_vistos:
+                continue
+            ids_vistos.add(chave_unica)
 
-        mapbox_id = (props.get("mapbox_id") or feat.get("id") or "").strip()
-        chave_unica = mapbox_id or f"{nome.lower()}|{coords}"
-        if chave_unica in ids_vistos:
-            continue
-        ids_vistos.add(chave_unica)
+            endereco = str(feat.get("place_name") or props.get("address") or "").strip()
+            cidade_item = _extrair_cidade_feature(feat, cidade)
 
-        endereco = (
-            props.get("full_address")
-            or props.get("address")
-            or props.get("place_formatted")
-            or ""
-        ).strip()
+            telefone = _extrair_telefone(props)
+            website = _extrair_website(props)
+            tem_site = bool(website)
 
-        context = props.get("context") or {}
-        place_ctx = context.get("place") or {}
-        cidade_item = (place_ctx.get("name") or cidade.strip()).strip()
+            if apenas_sem_site and tem_site:
+                continue
 
-        telefone = _extrair_telefone(props)
-        website = _extrair_website(props)
-        tem_site = bool(website)
+            place_id = f"mapbox_{mapbox_id}" if mapbox_id else ""
 
-        if apenas_sem_site and tem_site:
-            continue
+            leads_formatados.append(
+                {
+                    "place_id": place_id,
+                    "nome": nome,
+                    "telefone": telefone,
+                    "whatsapp_link": formatar_link_whatsapp(telefone),
+                    "endereco": endereco,
+                    "cidade": cidade_item,
+                    "nicho": nicho.strip(),
+                    "website": website,
+                    "tem_site": tem_site,
+                    "avaliacao": 0.0,
+                    "total_avaliacoes": "0",
+                    "status_kanban": "NOVO",
+                    "observacoes": "",
+                }
+            )
 
-        place_id = f"mapbox_{mapbox_id}" if mapbox_id else ""
-
-        leads_formatados.append({
-            "place_id": place_id,
-            "nome": nome,
-            "telefone": telefone,
-            "whatsapp_link": formatar_link_whatsapp(telefone),
-            "endereco": endereco,
-            "cidade": cidade_item,
-            "nicho": nicho.strip(),
-            "website": website,
-            "tem_site": tem_site,
-            "avaliacao": 0.0,
-            "total_avaliacoes": "0",
-            "status_kanban": "NOVO",
-            "observacoes": "",
-        })
-
-        if len(leads_formatados) >= max_resultados:
-            break
+            if len(leads_formatados) >= alvo:
+                break
 
     return leads_formatados
 
@@ -220,7 +261,7 @@ def executar_busca_google_maps(
     api_key_override: Optional[str] = None,
 ) -> Dict:
     """
-    Executa a busca de estabelecimentos/clínicas utilizando a Mapbox Search Box API.
+    Executa a busca de estabelecimentos/clínicas utilizando a Mapbox Geocoding API.
     Mantém o nome da função para compatibilidade direta com o main.py.
     """
     token = _obter_token_mapbox(api_key_override)

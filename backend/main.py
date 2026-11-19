@@ -29,7 +29,7 @@ init_storage()
 
 app = FastAPI(
     title="NWL Tech CRM & Buscador API",
-    version="1.1.0",
+    version="1.2.0",
     description="Backend híbrido (CSV Raiz + Railway DB) para Mobile CRM, Buscador e WhatsApp Cloud API",
 )
 
@@ -44,7 +44,8 @@ app.add_middleware(
 
 class BuscaRequest(BaseModel):
     nicho: str
-    cidade: str
+    cidade: Optional[str] = ""
+    estado: Optional[str] = ""
     raio_km: int = 15
     max_resultados: int = 20
     apenas_sem_site: bool = False
@@ -62,6 +63,12 @@ class NovoLeadManualRequest(BaseModel):
 
 
 class AtualizarLeadRequest(BaseModel):
+    nome: Optional[str] = None
+    telefone: Optional[str] = None
+    endereco: Optional[str] = None
+    cidade: Optional[str] = None
+    nicho: Optional[str] = None
+    website: Optional[str] = None
     status_kanban: Optional[str] = None
     observacoes: Optional[str] = None
 
@@ -83,6 +90,9 @@ def health_check():
         "tipo_banco": TIPO_BANCO_ATIVO,
         "tabela_leads_criada": TABELA_LEADS_CRIADA,
         "erro_banco": ERRO_CONEXAO_BANCO or None,
+        "apify_api_configurada": bool(
+            os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN")
+        ),
         "google_api_configurada": bool(os.getenv("GOOGLE_MAPS_API_KEY")),
         "whatsapp_api_configurada": bool(
             os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")
@@ -92,13 +102,19 @@ def health_check():
 
 @app.post("/api/buscar")
 def iniciar_buscador(req: BuscaRequest):
-    if not req.nicho.strip() or not req.cidade.strip():
-        raise HTTPException(status_code=400, detail="Informe a palavra-chave (nicho) e a cidade.")
+    if not req.nicho.strip():
+        raise HTTPException(status_code=400, detail="Informe a palavra-chave (nicho).")
+    if not (req.cidade or "").strip() and not (req.estado or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Informe pelo menos a cidade ou o estado.",
+        )
 
     try:
         resultado_busca = executar_busca_google_maps(
             nicho=req.nicho,
-            cidade=req.cidade,
+            cidade=(req.cidade or "").strip(),
+            estado=(req.estado or "").strip(),
             raio_km=req.raio_km,
             max_resultados=req.max_resultados,
             apenas_sem_site=req.apenas_sem_site,
@@ -155,16 +171,54 @@ def adicionar_lead_manual(req: NovoLeadManualRequest):
     return {"sucesso": True, "resumo": resumo, "leads": listar_leads()}
 
 
-@app.patch("/api/leads/{lead_id}")
-def editar_lead_kanban(lead_id: str, body: AtualizarLeadRequest):
-    atualizado = atualizar_lead(
-        lead_id=lead_id,
-        status_kanban=body.status_kanban,
-        observacoes=body.observacoes,
-    )
+def _executar_atualizacao_lead(lead_id: str, body: AtualizarLeadRequest):
+    try:
+        atualizado = atualizar_lead(
+            lead_id=lead_id,
+            nome=body.nome,
+            telefone=body.telefone,
+            whatsapp_link=formatar_link_whatsapp(body.telefone) if body.telefone is not None else None,
+            endereco=body.endereco,
+            cidade=body.cidade,
+            nicho=body.nicho,
+            website=body.website,
+            status_kanban=body.status_kanban.upper() if body.status_kanban else None,
+            observacoes=body.observacoes,
+        )
+    except TypeError:
+        # Fallback caso sua atualizar_lead no database.py aceite apenas (lead_id, status_kanban, observacoes)
+        atualizado = atualizar_lead(
+            lead_id=lead_id,
+            status_kanban=body.status_kanban.upper() if body.status_kanban else None,
+            observacoes=body.observacoes,
+        )
+
     if not atualizado:
         raise HTTPException(status_code=404, detail="Lead não encontrado.")
-    return {"sucesso": True, "lead": atualizado}
+    return {"sucesso": True, "lead": atualizado, "leads": listar_leads()}
+
+
+@app.put("/api/leads/{lead_id}")
+def editar_lead_completo(lead_id: str, body: AtualizarLeadRequest):
+    return _executar_atualizacao_lead(lead_id, body)
+
+
+@app.patch("/api/leads/{lead_id}")
+def editar_lead_kanban(lead_id: str, body: AtualizarLeadRequest):
+    return _executar_atualizacao_lead(lead_id, body)
+
+
+@app.delete("/api/leads/limpar-sem-telefone")
+def limpar_leads_sem_telefone():
+    leads = listar_leads()
+    removidos = 0
+    for item in leads:
+        tel_digitos = "".join(filter(str.isdigit, str(item.get("telefone") or "")))
+        if not tel_digitos:
+            lead_id = str(item.get("id") or item.get("place_id") or "")
+            if lead_id and deletar_lead(lead_id):
+                removidos += 1
+    return {"sucesso": True, "removidos": removidos, "leads": listar_leads()}
 
 
 @app.delete("/api/leads/{lead_id}")
@@ -172,7 +226,7 @@ def excluir_lead(lead_id: str):
     removido = deletar_lead(lead_id)
     if not removido:
         raise HTTPException(status_code=404, detail="Lead não encontrado.")
-    return {"sucesso": True}
+    return {"sucesso": True, "leads": listar_leads()}
 
 
 @app.get("/api/leads/exportar/csv")

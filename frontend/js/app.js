@@ -1,6 +1,7 @@
 // URL padrão do backend
 const URL_PADRAO_BACKEND = "https://nwltechcrm-production.up.railway.app";
 let API_URL = localStorage.getItem("nwl_backend_url") || URL_PADRAO_BACKEND;
+let LEADS_CACHE = [];
 
 function aplicarUrlNoInput() {
     const inputUrl = document.getElementById("config-backend-url");
@@ -13,6 +14,14 @@ function escaparAspas(valor) {
     return String(valor || "")
         .replace(/\\/g, "\\\\")
         .replace(/'/g, "\\'")
+        .replace(/"/g, "&quot;");
+}
+
+function escaparHtml(valor) {
+    return String(valor || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 }
 
@@ -76,27 +85,33 @@ function mudarAba(abaId, elemento) {
     if (abaAlvo) abaAlvo.classList.add("active");
     if (elemento) elemento.classList.add("active");
 
-    if (abaId === "kanban") {
+    if (abaId === "kanban" || abaId === "clientes") {
         carregarLeads();
     }
 }
 
-// Buscador
+// Buscador (Estado + Cidade opcional)
 function executarBusca() {
     const nichoInput = document.getElementById("busca-nicho");
+    const estadoInput = document.getElementById("busca-estado");
     const cidadeInput = document.getElementById("busca-cidade");
     const raioInput = document.getElementById("busca-raio");
     const maxInput = document.getElementById("busca-max");
     const semSiteInput = document.getElementById("busca-sem-site");
 
     const nicho = nichoInput ? nichoInput.value.trim() : "";
+    const estado = estadoInput ? estadoInput.value.trim() : "";
     const cidade = cidadeInput ? cidadeInput.value.trim() : "";
     const raio_km = raioInput ? raioInput.value : 15;
     const max_resultados = maxInput ? maxInput.value : 20;
     const apenas_sem_site = semSiteInput ? Boolean(semSiteInput.checked) : false;
 
-    if (!nicho || !cidade) {
-        alert("Preencha o nicho e a cidade.");
+    if (!nicho) {
+        alert("Preencha o nicho ou palavra-chave.");
+        return;
+    }
+    if (!cidade && !estado) {
+        alert("Informe pelo menos a cidade ou o estado.");
         return;
     }
 
@@ -110,6 +125,7 @@ function executarBusca() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             nicho,
+            estado,
             cidade,
             raio_km: parseInt(raio_km, 10) || 15,
             max_resultados: parseInt(max_resultados, 10) || 20,
@@ -130,7 +146,9 @@ function executarBusca() {
             }
 
             if (Array.isArray(data.leads) && data.leads.length > 0) {
-                renderizarKanban(data.leads);
+                LEADS_CACHE = data.leads;
+                renderizarKanban(LEADS_CACHE);
+                renderizarClientes(LEADS_CACHE);
             } else {
                 carregarLeads();
             }
@@ -144,7 +162,7 @@ function executarBusca() {
     });
 }
 
-// Buscar leads do backend e atualizar Kanban
+// Buscar leads do backend e atualizar Kanban + Clientes
 function carregarLeads() {
     fetch(`${API_URL}/api/leads`)
         .then(async res => {
@@ -154,7 +172,9 @@ function carregarLeads() {
         })
         .then(data => {
             const leads = Array.isArray(data.leads) ? data.leads : [];
+            LEADS_CACHE = leads;
             renderizarKanban(leads);
+            renderizarClientes(leads);
         })
         .catch(err => console.error("Erro ao carregar leads:", err));
 }
@@ -182,11 +202,11 @@ function renderizarKanban(leads) {
 
         contadores[status]++;
         const leadIdSeguro = escaparAspas(lead.id || lead.place_id || "");
-        const nomeSeguro = escaparAspas(lead.nome || "Sem Nome");
-        const cidadeSegura = escaparAspas(lead.cidade || "");
-        const nichoSeguro = escaparAspas(lead.nicho || "");
-        const telefoneSeguro = escaparAspas(lead.telefone || "");
-        const whatsappSeguro = escaparAspas(lead.whatsapp_link || "");
+        const nomeSeguro = escaparHtml(lead.nome || "Sem Nome");
+        const cidadeSegura = escaparHtml(lead.cidade || "");
+        const nichoSeguro = escaparHtml(lead.nicho || "");
+        const telefoneSeguro = escaparHtml(lead.telefone || "");
+        const whatsappSeguro = escaparHtml(lead.whatsapp_link || "");
 
         const card = document.createElement("div");
         card.className = "lead-card";
@@ -205,6 +225,8 @@ function renderizarKanban(leads) {
                 ${status !== "PENDENTE" ? `<button class="btn-sm" onclick="mudarStatusLead('${leadIdSeguro}', 'PENDENTE')">Pend.</button>` : ""}
                 ${status !== "CONTATO" ? `<button class="btn-sm" onclick="mudarStatusLead('${leadIdSeguro}', 'CONTATO')">Contato</button>` : ""}
                 ${status !== "FECHADO" ? `<button class="btn-sm" onclick="mudarStatusLead('${leadIdSeguro}', 'FECHADO')">Fechado</button>` : ""}
+                <button class="btn-sm" onclick="abrirModalEditarLead('${leadIdSeguro}')">Editar</button>
+                <button class="btn-sm" onclick="excluirLead('${leadIdSeguro}')">Excluir</button>
             </div>
         `;
 
@@ -222,6 +244,153 @@ function renderizarKanban(leads) {
     if (cPend) cPend.innerText = contadores["PENDENTE"];
     if (cCont) cCont.innerText = contadores["CONTATO"];
     if (cFech) cFech.innerText = contadores["FECHADO"];
+}
+
+// Desenhar lista completa na aba Clientes com filtros
+function renderizarClientes(leads = LEADS_CACHE) {
+    const lista = document.getElementById("lista-clientes");
+    if (!lista) return;
+
+    const termo = (document.getElementById("filtro-cliente-texto")?.value || "").toLowerCase().trim();
+    const statusFiltro = (document.getElementById("filtro-cliente-status")?.value || "").toUpperCase().trim();
+    const apenasComZap = Boolean(document.getElementById("filtro-cliente-whatsapp")?.checked);
+
+    const filtrados = (leads || []).filter(lead => {
+        const nome = (lead.nome || "").toLowerCase();
+        const tel = (lead.telefone || "").toLowerCase();
+        const cid = (lead.cidade || "").toLowerCase();
+        const nicho = (lead.nicho || "").toLowerCase();
+        const st = (lead.status_kanban || "NOVO").toUpperCase().trim();
+        const temZap = Boolean((lead.whatsapp_link || "").trim() || (lead.telefone || "").trim());
+
+        const bateTexto = !termo || nome.includes(termo) || tel.includes(termo) || cid.includes(termo) || nicho.includes(termo);
+        const bateStatus = !statusFiltro || st === statusFiltro;
+        const bateZap = !apenasComZap || temZap;
+
+        return bateTexto && bateStatus && bateZap;
+    });
+
+    if (!filtrados.length) {
+        lista.innerHTML = `<div class="lead-card"><div class="lead-info">Nenhum cliente encontrado com os filtros aplicados.</div></div>`;
+        return;
+    }
+
+    lista.innerHTML = filtrados.map(lead => {
+        const idSeguro = escaparAspas(lead.id || lead.place_id || "");
+        const nome = escaparHtml(lead.nome || "Sem Nome");
+        const telefone = escaparHtml(lead.telefone || "Sem telefone");
+        const cidade = escaparHtml(lead.cidade || "-");
+        const nicho = escaparHtml(lead.nicho || "-");
+        const status = escaparHtml(lead.status_kanban || "NOVO");
+        const obs = escaparHtml(lead.observacoes || "");
+        const zap = escaparHtml(lead.whatsapp_link || "");
+        const site = escaparHtml(lead.website || "");
+
+        return `
+            <div class="lead-card">
+                <div class="lead-name">${nome} <span style="font-size:0.75rem; opacity:0.8;">[${status}]</span></div>
+                <div class="lead-info">
+                    📞 ${telefone} • 📍 ${cidade}<br>
+                    🏷️ ${nicho} ${site ? `• <a href="${site}" target="_blank" rel="noopener noreferrer">Site</a>` : "• Sem site"}
+                    ${obs ? `<br>📝 ${obs}` : ""}
+                </div>
+                <div class="lead-actions">
+                    ${zap ? `<a href="${zap}" target="_blank" rel="noopener noreferrer" class="btn-whatsapp" style="padding:4px 8px; text-decoration:none; border-radius:4px; font-size:0.75rem;">WhatsApp</a>` : ""}
+                    <button class="btn-sm" onclick="abrirModalEditarLead('${idSeguro}')">Editar</button>
+                    <button class="btn-sm" onclick="excluirLead('${idSeguro}')">Excluir</button>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function abrirModalEditarLead(leadId) {
+    const lead = (LEADS_CACHE || []).find(item => String(item.id || item.place_id) === String(leadId));
+    if (!lead) return;
+
+    const idInput = document.getElementById("edit-lead-id");
+    const nomeInput = document.getElementById("edit-lead-nome");
+    const telInput = document.getElementById("edit-lead-telefone");
+    const cidInput = document.getElementById("edit-lead-cidade");
+    const statusSelect = document.getElementById("edit-lead-status");
+    const obsInput = document.getElementById("edit-lead-obs");
+    const modal = document.getElementById("modal-editar-lead");
+
+    if (idInput) idInput.value = lead.id ?? lead.place_id ?? "";
+    if (nomeInput) nomeInput.value = lead.nome || "";
+    if (telInput) telInput.value = lead.telefone || "";
+    if (cidInput) cidInput.value = lead.cidade || "";
+    if (statusSelect) statusSelect.value = (lead.status_kanban || "NOVO").toUpperCase();
+    if (obsInput) obsInput.value = lead.observacoes || "";
+    if (modal) modal.classList.remove("hidden");
+}
+
+function fecharModalEditarLead() {
+    const modal = document.getElementById("modal-editar-lead");
+    if (modal) modal.classList.add("hidden");
+}
+
+function salvarEdicaoLead() {
+    const leadId = document.getElementById("edit-lead-id")?.value;
+    if (!leadId) return;
+
+    const payload = {
+        nome: document.getElementById("edit-lead-nome")?.value.trim() || "",
+        telefone: document.getElementById("edit-lead-telefone")?.value.trim() || "",
+        cidade: document.getElementById("edit-lead-cidade")?.value.trim() || "",
+        status_kanban: document.getElementById("edit-lead-status")?.value || "NOVO",
+        observacoes: document.getElementById("edit-lead-obs")?.value.trim() || ""
+    };
+
+    fetch(`${API_URL}/api/leads/${encodeURIComponent(leadId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    })
+    .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `Erro HTTP ${res.status}`);
+        return data;
+    })
+    .then(() => {
+        fecharModalEditarLead();
+        carregarLeads();
+    })
+    .catch(err => alert("Erro ao salvar edição: " + (err.message || "Falha de conexão.")));
+}
+
+function excluirLead(leadId) {
+    if (!leadId) return;
+    if (!confirm("Deseja realmente excluir este cliente?")) return;
+
+    fetch(`${API_URL}/api/leads/${encodeURIComponent(leadId)}`, {
+        method: "DELETE"
+    })
+    .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `Erro HTTP ${res.status}`);
+        return data;
+    })
+    .then(() => carregarLeads())
+    .catch(err => alert("Erro ao excluir cliente: " + (err.message || "Falha de conexão.")));
+}
+
+function limparLeadsSemTelefone() {
+    if (!confirm("Excluir todos os clientes que estão sem telefone?")) return;
+
+    fetch(`${API_URL}/api/leads/limpar-sem-telefone`, {
+        method: "DELETE"
+    })
+    .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `Erro HTTP ${res.status}`);
+        return data;
+    })
+    .then(data => {
+        alert(`${data.removidos ?? 0} clientes sem telefone removidos.`);
+        carregarLeads();
+    })
+    .catch(err => alert("Erro ao limpar sem telefone: " + (err.message || "Falha de conexão.")));
 }
 
 function mudarStatusLead(leadId, novoStatus) {

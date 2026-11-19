@@ -35,7 +35,11 @@
                     <input type="text" id="busca-nicho" placeholder="Ex: Clínicas, Academias, Oficinas">
                 </div>
                 <div class="input-group">
-                    <label><i class="fa-solid fa-location-dot"></i> Cidade</label>
+                    <label><i class="fa-solid fa-map"></i> Estado (UF ou nome)</label>
+                    <input type="text" id="busca-estado" placeholder="Ex: PE ou Pernambuco">
+                </div>
+                <div class="input-group">
+                    <label><i class="fa-solid fa-location-dot"></i> Cidade (opcional — vazio busca no estado)</label>
                     <input type="text" id="busca-cidade" placeholder="Ex: Jaboatão dos Guararapes, Recife">
                 </div>
                 <div class="input-row">
@@ -94,7 +98,43 @@
             </div>
         </section>
 
-        <!-- ABA 3: CHAT / WHATSAPP -->
+        <!-- ABA 3: CLIENTES -->
+        <section id="tab-clientes" class="tab-content">
+            <div class="kanban-header">
+                <h2><i class="fa-solid fa-address-book"></i> Clientes</h2>
+                <button class="btn-sm" onclick="limparLeadsSemTelefone()" title="Excluir leads sem telefone">
+                    <i class="fa-solid fa-phone-slash"></i> Limpar sem tel
+                </button>
+            </div>
+            <p class="subtitle">Visualize, filtre, edite ou exclua os leads salvos no CRM.</p>
+
+            <div class="form-card">
+                <div class="input-group">
+                    <label><i class="fa-solid fa-magnifying-glass"></i> Buscar cliente</label>
+                    <input type="text" id="filtro-cliente-texto" placeholder="Nome, telefone, cidade ou nicho..." oninput="renderizarClientes()">
+                </div>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>Status</label>
+                        <select id="filtro-cliente-status" onchange="renderizarClientes()">
+                            <option value="">Todos</option>
+                            <option value="NOVO">NOVO</option>
+                            <option value="PENDENTE">PENDENTE</option>
+                            <option value="CONTATO">CONTATO</option>
+                            <option value="FECHADO">FECHADO</option>
+                        </select>
+                    </div>
+                    <div class="checkbox-group" style="margin-top: 20px;">
+                        <input type="checkbox" id="filtro-cliente-whatsapp" onchange="renderizarClientes()">
+                        <label for="filtro-cliente-whatsapp">Só com WhatsApp</label>
+                    </div>
+                </div>
+            </div>
+
+            <div id="lista-clientes"></div>
+        </section>
+
+        <!-- ABA 4: CHAT / WHATSAPP -->
         <section id="tab-chat" class="tab-content">
             <h2><i class="fa-brands fa-whatsapp"></i> WhatsApp Cloud API</h2>
             <p class="subtitle">Envio oficial de mensagens e disparo em massa.</p>
@@ -114,7 +154,7 @@
             </div>
         </section>
 
-        <!-- ABA 4: CONFIGURAÇÕES -->
+        <!-- ABA 5: CONFIGURAÇÕES -->
         <section id="tab-config" class="tab-content">
             <h2><i class="fa-solid fa-gear"></i> Configurações & API</h2>
             <p class="subtitle">Conexão com o Backend do Railway e Meta.</p>
@@ -136,6 +176,45 @@
 
     </main>
 
+    <!-- Modal de Edição de Cliente (PUT) -->
+    <div id="modal-editar-lead" class="result-box hidden" style="position: fixed; inset: 0; z-index: 999; margin: 0; border-radius: 0; background: rgba(0, 0, 0, 0.8); display: flex; align-items: center; justify-content: center; padding: 16px;">
+        <div class="form-card" style="width: 100%; max-width: 440px;">
+            <h3 style="margin-bottom: 12px;"><i class="fa-solid fa-pen"></i> Editar Cliente</h3>
+            <input type="hidden" id="edit-lead-id">
+
+            <div class="input-group">
+                <label>Nome</label>
+                <input type="text" id="edit-lead-nome">
+            </div>
+            <div class="input-group">
+                <label>Telefone</label>
+                <input type="text" id="edit-lead-telefone">
+            </div>
+            <div class="input-group">
+                <label>Cidade</label>
+                <input type="text" id="edit-lead-cidade">
+            </div>
+            <div class="input-group">
+                <label>Status Kanban</label>
+                <select id="edit-lead-status">
+                    <option value="NOVO">NOVO</option>
+                    <option value="PENDENTE">PENDENTE</option>
+                    <option value="CONTATO">CONTATO</option>
+                    <option value="FECHADO">FECHADO</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label>Observações</label>
+                <textarea id="edit-lead-obs" rows="3"></textarea>
+            </div>
+
+            <div class="input-row">
+                <button class="btn-sm" onclick="fecharModalEditarLead()">Cancelar</button>
+                <button class="btn-primary" onclick="salvarEdicaoLead()">Salvar Alterações</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Navegação Inferior Fixa (Mobile) -->
     <nav class="bottom-nav">
         <button class="nav-item active" onclick="mudarAba('buscador', this)">
@@ -145,6 +224,10 @@
         <button class="nav-item" onclick="mudarAba('kanban', this)">
             <i class="fa-solid fa-columns"></i>
             <span>Kanban</span>
+        </button>
+        <button class="nav-item" onclick="mudarAba('clientes', this)">
+            <i class="fa-solid fa-address-book"></i>
+            <span>Clientes</span>
         </button>
         <button class="nav-item" onclick="mudarAba('chat', this)">
             <i class="fa-brands fa-whatsapp"></i>

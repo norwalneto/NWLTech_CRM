@@ -11,6 +11,10 @@ from database import (
     BASE_DIR,
     CSV_PATH,
     DATABASE_URL,
+    BANCO_CONECTADO,
+    TIPO_BANCO_ATIVO,
+    TABELA_LEADS_CRIADA,
+    ERRO_CONEXAO_BANCO,
     init_storage,
     sincronizar_banco_para_csv,
     listar_leads,
@@ -69,14 +73,20 @@ class EnviarMensagemWhatsAppRequest(BaseModel):
 
 @app.get("/")
 def health_check():
+    init_storage()
     return {
         "status": "online",
         "servico": "NWL Tech CRM Backend",
         "pasta_raiz_detectada": str(BASE_DIR),
         "arquivo_csv": str(CSV_PATH),
-        "banco_railway_conectado": bool(DATABASE_URL),
+        "banco_railway_conectado": BANCO_CONECTADO,
+        "tipo_banco": TIPO_BANCO_ATIVO,
+        "tabela_leads_criada": TABELA_LEADS_CRIADA,
+        "erro_banco": ERRO_CONEXAO_BANCO or None,
         "google_api_configurada": bool(os.getenv("GOOGLE_MAPS_API_KEY")),
-        "whatsapp_api_configurada": bool(os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")),
+        "whatsapp_api_configurada": bool(
+            os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+        ),
     }
 
 
@@ -187,10 +197,9 @@ def enviar_mensagem_whatsapp(req: EnviarMensagemWhatsAppRequest):
     if not token or not phone_number_id:
         raise HTTPException(
             status_code=400,
-            detail="Credenciais do WhatsApp (WHATSAPP_ACCESS_TOKEN ou PHONE_NUMBER_ID) não configuradas no ambiente."
+            detail="Credenciais do WhatsApp (WHATSAPP_ACCESS_TOKEN ou PHONE_NUMBER_ID) não configuradas no ambiente.",
         )
 
-    # Limpa o telefone para conter apenas números com DDI (ex: 5581999999999)
     telefone_limpo = "".join(filter(str.isdigit, req.telefone))
     if not telefone_limpo.startswith("55") and len(telefone_limpo) in (10, 11):
         telefone_limpo = f"55{telefone_limpo}"
@@ -241,25 +250,23 @@ async def receber_eventos_whatsapp(request: Request):
     """Processa mensagens recebidas dos clientes e atualizações de entrega."""
     try:
         payload = await request.json()
-        
+
         for entry in payload.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
-                
-                # 1. Mensagens recebidas dos clientes
+
                 messages = value.get("messages", [])
                 if messages:
                     for msg in messages:
                         remetente = msg.get("from")
                         texto_msg = msg.get("text", {}).get("body", "")
                         print(f"[WHATSAPP CHAT] Mensagem recebida de {remetente}: {texto_msg}")
-                
-                # 2. Status de entrega (enviado, entregue, lido)
+
                 statuses = value.get("statuses", [])
                 if statuses:
                     for status in statuses:
                         msg_id = status.get("id")
-                        estado = status.get("status") # sent, delivered, read
+                        estado = status.get("status")
                         print(f"[WHATSAPP STATUS] Mensagem {msg_id} atualizada para: {estado}")
 
         return {"status": "recebido"}

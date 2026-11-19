@@ -1,16 +1,16 @@
+import math
+import os
 import re
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+from urllib.parse import quote_plus
+
 import requests
 
-NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
-PHOTON_SEARCH_URL = "https://photon.komoot.io/api/"
-
-HEADERS_OSM = {
-    "User-Agent": "NWLTechCRM/1.0 (contato@nwltecnologia.site)"
-}
+MAPBOX_GEOCODING_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places"
+MAPBOX_SEARCHBOX_URL = "https://api.mapbox.com/search/searchbox/v1/forward"
 
 
-def formatar_link_whatsapp(telefone: str) -> str:
+def formatar_link_whatsapp(telefone: Optional[str]) -> str:
     """Limpa o telefone, adiciona DDI 55 se necessário e monta o link wa.me."""
     digitos = re.sub(r"\D", "", telefone or "")
     if not digitos:
@@ -20,185 +20,222 @@ def formatar_link_whatsapp(telefone: str) -> str:
     return f"https://wa.me/{digitos}"
 
 
-def obter_coordenadas_cidade(cidade: str) -> Dict:
-    """Localiza o centro da cidade via Nominatim."""
-    endereco_busca = cidade.strip()
-    if "brasil" not in endereco_busca.lower():
-        endereco_busca = f"{endereco_busca}, Brasil"
+def _calcular_distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calcula a distância aproximada em km entre duas coordenadas (fórmula de Haversine)."""
+    raio_terra_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
 
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    return 2 * raio_terra_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _obter_token_mapbox(api_key_override: Optional[str] = None) -> str:
+    """Obtém o token da Mapbox a partir do override ou das variáveis de ambiente."""
+    token = (
+        (api_key_override or "").strip()
+        or os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
+        or os.getenv("MAPBOX_API_KEY", "").strip()
+    )
+    if not token:
+        raise ValueError(
+            "Token da Mapbox não encontrado. Configure MAPBOX_ACCESS_TOKEN nas Variables do Railway."
+        )
+    return token
+
+
+def obter_coordenadas_cidade(cidade: str, token: str) -> Dict:
+    """Resolve latitude, longitude e endereço formatado da cidade via Mapbox Geocoding."""
+    cidade_limpa = cidade.strip()
+    if not cidade_limpa:
+        raise ValueError("Cidade não informada.")
+
+    url = f"{MAPBOX_GEOCODING_URL}/{quote_plus(cidade_limpa)}.json"
     params = {
-        "q": endereco_busca,
-        "format": "json",
+        "access_token": token,
+        "country": "br",
+        "types": "place,locality,neighborhood,region",
+        "language": "pt",
         "limit": 1,
     }
 
-    resp = requests.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
     dados = resp.json()
 
-    if not dados:
-        raise ValueError(f"Cidade '{cidade}' não encontrada.")
+    features = dados.get("features") or []
+    if not features:
+        raise ValueError(f"Cidade '{cidade}' não encontrada na Mapbox.")
 
-    resultado = dados[0]
+    feat = features[0]
+    center = feat.get("center") or [0.0, 0.0]  # Mapbox retorna [lon, lat]
+    lon, lat = float(center[0]), float(center[1])
+
     return {
-        "lat": float(resultado["lat"]),
-        "lng": float(resultado["lon"]),
-        "endereco_formatado": resultado.get("display_name", cidade),
-    }
-
-
-def buscar_via_photon(nicho: str, cidade: str, lat: float, lng: float, max_resultados: int) -> List[Dict]:
-    """Busca rápida de estabelecimentos comerciais usando o motor Photon (OpenStreetMap)."""
-    query = f"{nicho.strip()} {cidade.strip()}"
-    params = {
-        "q": query,
         "lat": lat,
-        "lon": lng,
-        "limit": min(max_resultados * 2, 50),
+        "lng": lon,
+        "endereco_formatado": feat.get("place_name") or cidade_limpa,
     }
 
-    resp = requests.get(PHOTON_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
-    if resp.status_code != 200:
-        return []
 
-    dados = resp.json()
-    features = dados.get("features", [])
-    resultados = []
+def _extrair_telefone(props: Dict) -> str:
+    """Extrai telefone caso a feature da Mapbox traga informação de contato."""
+    metadata = props.get("metadata") or {}
+    candidatos = [
+        props.get("phone"),
+        props.get("tel"),
+        props.get("contact_phone"),
+        metadata.get("phone"),
+        metadata.get("tel"),
+    ]
+    for cand in candidatos:
+        if cand and str(cand).strip():
+            return str(cand).strip()
+    return ""
+
+
+def _extrair_website(props: Dict) -> str:
+    """Extrai website caso a feature da Mapbox traga URL."""
+    metadata = props.get("metadata") or {}
+    candidatos = [
+        props.get("website"),
+        props.get("url"),
+        metadata.get("website"),
+        metadata.get("url"),
+    ]
+    for cand in candidatos:
+        if cand and str(cand).strip():
+            url = str(cand).strip()
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+            return url
+    return ""
+
+
+def buscar_via_mapbox(
+    nicho: str,
+    cidade: str,
+    lat: float,
+    lng: float,
+    raio_km: int,
+    max_resultados: int,
+    apenas_sem_site: bool = False,
+    token: str = "",
+) -> List[Dict]:
+    """Busca estabelecimentos e clínicas na Mapbox Search Box API."""
+    limite_api = max(1, min(int(max_resultados or 20), 25))
+    raio_max = float(raio_km or 15)
+
+    params = {
+        "q": f"{nicho.strip()} {cidade.strip()}",
+        "access_token": token,
+        "language": "pt",
+        "country": "BR",
+        "proximity": f"{lng},{lat}",
+        "limit": limite_api,
+    }
+
+    resp = requests.get(MAPBOX_SEARCHBOX_URL, params=params, timeout=20)
+    resp.raise_for_status()
+    payload = resp.json()
+
+    features = payload.get("features") or []
+    leads_formatados: List[Dict] = []
+    ids_vistos = set()
 
     for feat in features:
-        props = feat.get("properties", {})
-        nome = props.get("name")
+        props = feat.get("properties") or {}
+        geom = feat.get("geometry") or {}
+        coords = geom.get("coordinates") or []
+
+        if len(coords) >= 2:
+            lon_item, lat_item = float(coords[0]), float(coords[1])
+            distancia = _calcular_distancia_km(lat, lng, lat_item, lon_item)
+            if distancia > raio_max:
+                continue
+
+        nome = (props.get("name") or props.get("name_preferred") or "").strip()
         if not nome:
             continue
 
-        # Filtra para garantir que pertence à cidade ou região próxima
-        cidade_item = (props.get("city") or props.get("county") or props.get("state") or "").lower()
-        if cidade.strip().lower() not in cidade_item and "pernambuco" not in cidade_item and cidade_item != "":
+        mapbox_id = (props.get("mapbox_id") or feat.get("id") or "").strip()
+        chave_unica = mapbox_id or f"{nome.lower()}|{coords}"
+        if chave_unica in ids_vistos:
             continue
+        ids_vistos.add(chave_unica)
 
-        rua = props.get("street", "")
-        numero = props.get("housenumber", "")
-        bairro = props.get("district") or props.get("suburb") or ""
-        cidade_final = props.get("city") or cidade.strip()
-
-        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade_final] if p]
-        endereco_completo = " - ".join(partes_end)
-
-        osm_id = f"photon_{props.get('osm_type', 'N')}_{props.get('osm_id', len(resultados))}"
-
-        resultados.append({
-            "place_id": osm_id,
-            "nome": nome,
-            "telefone": "",
-            "whatsapp_link": "",
-            "endereco": endereco_completo,
-            "cidade": cidade_final,
-            "nicho": nicho.strip(),
-            "website": "",
-            "tem_site": False,
-            "avaliacao": 0.0,
-            "total_avaliacoes": 0,
-            "status_kanban": "NOVO",
-        })
-
-    return resultados
-
-
-def buscar_via_nominatim(nicho: str, cidade: str, max_resultados: int) -> List[Dict]:
-    """Busca complementar diretamente no Nominatim com detalhes extras (telefone, site)."""
-    query = f"{nicho.strip()} em {cidade.strip()}, Brasil"
-    params = {
-        "q": query,
-        "format": "json",
-        "addressdetails": 1,
-        "extratags": 1,
-        "limit": min(max_resultados * 2, 40),
-    }
-
-    resp = requests.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS_OSM, timeout=15)
-    if resp.status_code != 200:
-        return []
-
-    dados = resp.json()
-    resultados = []
-
-    for item in dados:
-        nome = item.get("name")
-        if not nome:
-            continue
-
-        extratags = item.get("extratags", {}) or {}
-        address = item.get("address", {}) or {}
-
-        website = extratags.get("website") or extratags.get("contact:website") or extratags.get("url") or ""
-        telefone = (
-            extratags.get("phone")
-            or extratags.get("contact:phone")
-            or extratags.get("contact:whatsapp")
+        endereco = (
+            props.get("full_address")
+            or props.get("address")
+            or props.get("place_formatted")
             or ""
-        )
+        ).strip()
 
-        rua = address.get("road", "")
-        numero = address.get("house_number", "")
-        bairro = address.get("suburb") or address.get("neighbourhood") or ""
-        cidade_final = address.get("city") or address.get("town") or cidade.strip()
+        context = props.get("context") or {}
+        place_ctx = context.get("place") or {}
+        cidade_item = (place_ctx.get("name") or cidade.strip()).strip()
 
-        partes_end = [p for p in [f"{rua}, {numero}".strip(", "), bairro, cidade_final] if p]
-        endereco_completo = " - ".join(partes_end) or item.get("display_name", "")
+        telefone = _extrair_telefone(props)
+        website = _extrair_website(props)
+        tem_site = bool(website)
 
-        osm_id = f"nom_{item.get('osm_type', 'node')}_{item.get('osm_id')}"
+        if apenas_sem_site and tem_site:
+            continue
 
-        resultados.append({
-            "place_id": osm_id,
+        place_id = f"mapbox_{mapbox_id}" if mapbox_id else ""
+
+        leads_formatados.append({
+            "place_id": place_id,
             "nome": nome,
             "telefone": telefone,
             "whatsapp_link": formatar_link_whatsapp(telefone),
-            "endereco": endereco_completo,
-            "cidade": cidade_final,
+            "endereco": endereco,
+            "cidade": cidade_item,
             "nicho": nicho.strip(),
             "website": website,
-            "tem_site": bool(website),
+            "tem_site": tem_site,
             "avaliacao": 0.0,
-            "total_avaliacoes": 0,
+            "total_avaliacoes": "0",
             "status_kanban": "NOVO",
+            "observacoes": "",
         })
 
-    return resultados
+        if len(leads_formatados) >= max_resultados:
+            break
+
+    return leads_formatados
 
 
 def executar_busca_google_maps(
     nicho: str,
     cidade: str,
-    raio_km: int = 10,
+    raio_km: int = 15,
     max_resultados: int = 20,
     apenas_sem_site: bool = False,
     api_key_override: Optional[str] = None,
 ) -> Dict:
     """
-    Executa a pesquisa rápida combinando Nominatim (com tags de contato) e Photon API,
-    eliminando timeouts e erros 504 da Overpass API.
+    Executa a busca de estabelecimentos/clínicas utilizando a Mapbox Search Box API.
+    Mantém o nome da função para compatibilidade direta com o main.py.
     """
-    geo = obter_coordenadas_cidade(cidade)
-    lat, lng = geo["lat"], geo["lng"]
+    token = _obter_token_mapbox(api_key_override)
+    geo = obter_coordenadas_cidade(cidade=cidade, token=token)
 
-    # 1. Tenta primeiro pelo Nominatim (traz telefone e site quando cadastrados)
-    leads_brutos = buscar_via_nominatim(nicho, cidade, max_resultados)
-
-    # 2. Complementa com o Photon API se vierem poucos resultados
-    if len(leads_brutos) < max_resultados:
-        leads_photon = buscar_via_photon(nicho, cidade, lat, lng, max_resultados)
-        nomes_existentes = {l["nome"].lower() for l in leads_brutos}
-        for lp in leads_photon:
-            if lp["nome"].lower() not in nomes_existentes:
-                leads_brutos.append(lp)
-                nomes_existentes.add(lp["nome"].lower())
-
-    leads_coletados: List[Dict] = []
-    for lead in leads_brutos:
-        if len(leads_coletados) >= max_resultados:
-            break
-        if apenas_sem_site and lead["tem_site"]:
-            continue
-        leads_coletados.append(lead)
+    leads_coletados = buscar_via_mapbox(
+        nicho=nicho,
+        cidade=cidade,
+        lat=geo["lat"],
+        lng=geo["lng"],
+        raio_km=raio_km,
+        max_resultados=max_resultados,
+        apenas_sem_site=apenas_sem_site,
+        token=token,
+    )
 
     return {
         "coordenadas_cidade": geo,

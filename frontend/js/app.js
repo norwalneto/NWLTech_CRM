@@ -95,14 +95,12 @@ function executarBusca() {
     const nichoInput = document.getElementById("busca-nicho");
     const estadoInput = document.getElementById("busca-estado");
     const cidadeInput = document.getElementById("busca-cidade");
-    const raioInput = document.getElementById("busca-raio");
     const maxInput = document.getElementById("busca-max");
     const semSiteInput = document.getElementById("busca-sem-site");
 
     const nicho = nichoInput ? nichoInput.value.trim() : "";
     const estado = estadoInput ? estadoInput.value.trim() : "";
     const cidade = cidadeInput ? cidadeInput.value.trim() : "";
-    const raio_km = raioInput ? raioInput.value : 15;
     const max_resultados = maxInput ? maxInput.value : 20;
     const apenas_sem_site = semSiteInput ? Boolean(semSiteInput.checked) : false;
 
@@ -127,7 +125,6 @@ function executarBusca() {
             nicho,
             estado,
             cidade,
-            raio_km: parseInt(raio_km, 10) || 15,
             max_resultados: parseInt(max_resultados, 10) || 20,
             apenas_sem_site
         })

@@ -26,7 +26,7 @@
 
         <!-- ABA 1: BUSCADOR -->
         <section id="tab-buscador" class="tab-content active">
-            <h2><i class="fa-solid fa-radar"></i> Buscador de Leads</h2>
+            <h2><i class="fa-solid fa-magnifying-glass"></i> Buscador de Leads</h2>
             <p class="subtitle">Minere estabelecimentos via Google Maps direto para o seu CRM.</p>
             
             <div class="form-card">
@@ -42,15 +42,9 @@
                     <label><i class="fa-solid fa-location-dot"></i> Cidade (opcional — vazio busca no estado)</label>
                     <input type="text" id="busca-cidade" placeholder="Ex: Jaboatão dos Guararapes, Recife">
                 </div>
-                <div class="input-row">
-                    <div class="input-group">
-                        <label>Raio (Km)</label>
-                        <input type="number" id="busca-raio" value="15">
-                    </div>
-                    <div class="input-group">
-                        <label>Qtd Máxima</label>
-                        <input type="number" id="busca-max" value="20">
-                    </div>
+                <div class="input-group">
+                    <label><i class="fa-solid fa-list-ol"></i> Qtd Máxima</label>
+                    <input type="number" id="busca-max" value="20" min="1" max="80">
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="busca-sem-site">
@@ -218,7 +212,7 @@
     <!-- Navegação Inferior Fixa (Mobile) -->
     <nav class="bottom-nav">
         <button class="nav-item active" onclick="mudarAba('buscador', this)">
-            <i class="fa-solid fa-radar"></i>
+            <i class="fa-solid fa-magnifying-glass"></i>
             <span>Buscador</span>
         </button>
         <button class="nav-item" onclick="mudarAba('kanban', this)">

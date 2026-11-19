@@ -128,39 +128,196 @@
             <div id="lista-clientes"></div>
         </section>
 
-        <!-- ABA 4: CHAT / WHATSAPP -->
+        <!-- ABA 4: WHATSAPP (CONVERSAS + ENVIOS) -->
         <section id="tab-chat" class="tab-content">
-            <h2><i class="fa-brands fa-whatsapp"></i> WhatsApp Cloud API</h2>
-            <p class="subtitle">Envio oficial de mensagens e disparo em massa.</p>
-
-            <div class="form-card">
-                <div class="input-group">
-                    <label>Número do Destinatário (com DDD)</label>
-                    <input type="text" id="chat-telefone" placeholder="Ex: 5581999999999">
-                </div>
-                <div class="input-group">
-                    <label>Mensagem</label>
-                    <textarea id="chat-mensagem" rows="4" placeholder="Digite sua abordagem comercial..."></textarea>
-                </div>
-                <button class="btn-whatsapp" onclick="enviarMensagemWhatsApp()">
-                    <i class="fa-solid fa-paper-plane"></i> Enviar via API Meta
+            <div class="kanban-header">
+                <h2><i class="fa-brands fa-whatsapp"></i> WhatsApp Business</h2>
+                <button class="btn-sm" onclick="abrirModalNovaConversa()" title="Iniciar nova conversa com cliente">
+                    <i class="fa-solid fa-plus"></i> Nova Conversa
                 </button>
+            </div>
+
+            <!-- Sub-navegação interna da seção WhatsApp -->
+            <div class="wa-subnav">
+                <button id="wa-tab-btn-conversas" class="wa-subnav-btn active" onclick="mudarSubAbaWhatsApp('conversas', this)">
+                    <i class="fa-solid fa-comments"></i> Conversas
+                </button>
+                <button id="wa-tab-btn-envios" class="wa-subnav-btn" onclick="mudarSubAbaWhatsApp('envios', this)">
+                    <i class="fa-solid fa-paper-plane"></i> Envios
+                </button>
+            </div>
+
+            <!-- SUB-VISÃO A: CHAT / CONVERSAS -->
+            <div id="wa-view-conversas" class="wa-subview active">
+                
+                <!-- Lista de Conversas e Filtros -->
+                <div id="wa-lista-view">
+                    <div class="form-card wa-filter-card">
+                        <div class="input-group" style="margin-bottom: 10px;">
+                            <input type="text" id="wa-filtro-busca" placeholder="Buscar conversa por nome ou número..." oninput="renderizarConversasWhatsApp()">
+                        </div>
+                        <div class="wa-filter-pills">
+                            <button class="wa-pill active" data-filtro="TODOS" onclick="selecionarFiltroConversa('TODOS', this)">Todas</button>
+                            <button class="wa-pill" data-filtro="NAO_LIDAS" onclick="selecionarFiltroConversa('NAO_LIDAS', this)">Não lidas</button>
+                            <button class="wa-pill" data-filtro="JANELA_24H" onclick="selecionarFiltroConversa('JANELA_24H', this)">Janela 24h</button>
+                            <button class="wa-pill" data-filtro="AGUARDANDO" onclick="selecionarFiltroConversa('AGUARDANDO', this)">Aguardando</button>
+                        </div>
+                    </div>
+
+                    <div id="wa-lista-conversas" class="wa-chat-list">
+                        <!-- Renderizado dinamicamente via JS -->
+                    </div>
+                </div>
+
+                <!-- Tela da Conversa Ativa (estilo WhatsApp) -->
+                <div id="wa-thread-view" class="wa-thread-container hidden">
+                    <div class="wa-thread-header">
+                        <button class="btn-sm" onclick="voltarParaListaConversas()" title="Voltar para conversas">
+                            <i class="fa-solid fa-arrow-left"></i>
+                        </button>
+                        <div class="wa-thread-contact">
+                            <strong id="wa-chat-contato-nome">Selecione um cliente</strong>
+                            <small id="wa-chat-contato-info">+55 81 99999-9999 • Janela 24h</small>
+                        </div>
+                        <span id="wa-janela-badge" class="wa-badge-window">24h Ativa</span>
+                    </div>
+
+                    <!-- Área de Balões de Mensagens -->
+                    <div id="wa-mensagens-box" class="wa-messages-area">
+                        <!-- Balões enviados/recebidos -->
+                    </div>
+
+                    <!-- Gaveta Rápida de Modelos (Templates Meta) -->
+                    <div id="wa-templates-drawer" class="wa-templates-drawer hidden">
+                        <div class="wa-drawer-header">
+                            <span><i class="fa-solid fa-file-lines"></i> Modelos Aprovados (Iniciar Conversa)</span>
+                            <button class="btn-sm" onclick="alternarGavetaTemplates()"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div class="input-group" style="margin-bottom: 8px;">
+                            <select id="wa-chat-template-select" onchange="atualizarPreviewTemplateChat()">
+                                <option value="hello_world">hello_world (Teste Oficial Meta)</option>
+                                <option value="apresentacao_nwl">apresentacao_nwl (Apresentação Comercial)</option>
+                                <option value="proposta_site">proposta_site (Oferta Criação de Site)</option>
+                            </select>
+                        </div>
+                        <p id="wa-chat-template-preview" class="desc-sm">Olá! Tudo bem? Aqui é da NWL Tech...</p>
+                        <button class="btn-whatsapp" onclick="enviarTemplateNaConversa()">
+                            <i class="fa-solid fa-paper-plane"></i> Enviar Modelo Agora
+                        </button>
+                    </div>
+
+                    <!-- Barra Inferior de Digitação -->
+                    <div class="wa-composer-bar">
+                        <button class="btn-sm wa-btn-template" onclick="alternarGavetaTemplates()" title="Usar Modelo / Template">
+                            <i class="fa-solid fa-file-lines"></i>
+                        </button>
+                        <input type="text" id="wa-input-mensagem" placeholder="Digite uma mensagem..." onkeypress="if(event.key==='Enter') enviarMensagemConversaAtiva()">
+                        <button class="btn-whatsapp wa-btn-send" onclick="enviarMensagemConversaAtiva()" title="Enviar">
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SUB-VISÃO B: ENVIOS / DISPARO DE MODELOS -->
+            <div id="wa-view-envios" class="wa-subview hidden">
+                <div class="form-card">
+                    <h3><i class="fa-solid fa-bullhorn"></i> Envios & Modelos</h3>
+                    <p class="desc-sm">Inicie conversas usando modelos aprovados na Meta ou envie mensagens diretas para clientes selecionados.</p>
+
+                    <div class="input-group">
+                        <label>Selecionar Cliente do CRM (ou digite abaixo)</label>
+                        <select id="envio-cliente-select" onchange="preencherDestinoEnvio()">
+                            <option value="">-- Selecione um cliente salvo --</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label>Número de Destino (com DDI + DDD)</label>
+                        <input type="text" id="chat-telefone" placeholder="Ex: 5581999999999">
+                    </div>
+
+                    <div class="input-group">
+                        <label>Tipo de Envio</label>
+                        <select id="envio-tipo" onchange="alternarTipoEnvio()">
+                            <option value="TEMPLATE">Modelo Aprovado (Iniciar Conversa / Fora 24h)</option>
+                            <option value="TEXTO">Mensagem Livre (Dentro da Janela 24h)</option>
+                        </select>
+                    </div>
+
+                    <div id="envio-box-template" class="input-group">
+                        <label>Modelo (Template Meta)</label>
+                        <select id="envio-template-nome">
+                            <option value="hello_world">hello_world (en_US - Padrão Meta)</option>
+                            <option value="apresentacao_nwl">apresentacao_nwl (pt_BR)</option>
+                            <option value="proposta_site">proposta_site (pt_BR)</option>
+                        </select>
+                    </div>
+
+                    <div id="envio-box-texto" class="input-group hidden">
+                        <label>Mensagem</label>
+                        <textarea id="chat-mensagem" rows="4" placeholder="Digite sua abordagem comercial..."></textarea>
+                    </div>
+
+                    <button class="btn-whatsapp" onclick="enviarMensagemWhatsApp()">
+                        <i class="fa-solid fa-paper-plane"></i> Disparar via API Meta
+                    </button>
+                </div>
             </div>
         </section>
 
         <!-- ABA 5: CONFIGURAÇÕES -->
         <section id="tab-config" class="tab-content">
             <h2><i class="fa-solid fa-gear"></i> Configurações & API</h2>
-            <p class="subtitle">Conexão com o Backend do Railway e Meta.</p>
+            <p class="subtitle">Conexão com o Backend, Webhook e WhatsApp Cloud API.</p>
 
+            <!-- Servidor Backend -->
             <div class="form-card">
+                <h3><i class="fa-solid fa-server"></i> Servidor Backend</h3>
                 <div class="input-group">
-                    <label>URL do Backend (Railway)</label>
-                    <input type="text" id="config-backend-url" value="https://seu-app.up.railway.app">
+                    <label>URL do Backend (Railway / Heroku)</label>
+                    <input type="text" id="config-backend-url" value="https://nwltechcrm-production.up.railway.app">
                 </div>
                 <button class="btn-primary" onclick="salvarConfiguracoes()">Salvar URL</button>
+            </div>
+
+            <!-- Credenciais & Webhook Meta -->
+            <div class="form-card" style="margin-top: 14px;">
+                <h3><i class="fa-brands fa-whatsapp"></i> WhatsApp Cloud API & Webhook</h3>
+                <p class="desc-sm">Configure os identificadores da sua conta comercial e o endpoint de retorno (Webhook) da Meta.</p>
+
+                <div class="input-group">
+                    <label>URL do Webhook (Cole no Painel Meta Developers)</label>
+                    <input type="text" id="config-webhook-url" readonly value="https://nwltechcrm-production.up.railway.app/webhook">
+                </div>
+
+                <div class="input-group">
+                    <label>Verify Token (Token de Verificação do Webhook)</label>
+                    <input type="text" id="config-verify-token" placeholder="Ex: nwltech_verify_token">
+                </div>
+
+                <div class="input-group">
+                    <label>Phone Number ID (ID do Número de Telefone)</label>
+                    <input type="text" id="config-phone-number-id" placeholder="Ex: 109876543210987">
+                </div>
+
+                <div class="input-group">
+                    <label>WhatsApp Business Account ID (WABA ID)</label>
+                    <input type="text" id="config-waba-id" placeholder="Ex: 102938475610293">
+                </div>
+
+                <div class="input-group">
+                    <label>Access Token Permanente (System User)</label>
+                    <input type="password" id="config-access-token" placeholder="EAABsbCS1iHgBO...">
+                </div>
+
+                <button class="btn-primary" onclick="salvarConfiguracoesMeta()">
+                    <i class="fa-solid fa-floppy-disk"></i> Salvar Credenciais Meta
+                </button>
+
                 <hr class="divider">
-                <h3>Cadastro Incorporado Meta</h3>
+
+                <h3><i class="fa-brands fa-meta"></i> Cadastro Incorporado Meta</h3>
                 <p class="desc-sm">Conecte sua conta do WhatsApp Business mantendo coexistência com o aplicativo do celular.</p>
                 <button class="btn-meta" onclick="iniciarEmbeddedSignup()">
                     <i class="fa-brands fa-facebook"></i> Continuar com o Facebook
@@ -169,6 +326,22 @@
         </section>
 
     </main>
+
+    <!-- Modal: Iniciar Nova Conversa selecionando um Cliente -->
+    <div id="modal-nova-conversa" class="result-box hidden" style="position: fixed; inset: 0; z-index: 999; margin: 0; border-radius: 0; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; padding: 16px;">
+        <div class="form-card" style="width: 100%; max-width: 440px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="kanban-header" style="margin-bottom: 10px;">
+                <h3><i class="fa-brands fa-whatsapp"></i> Nova Conversa</h3>
+                <button class="btn-sm" onclick="fecharModalNovaConversa()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="input-group">
+                <input type="text" id="busca-cliente-nova-conversa" placeholder="Filtrar cliente por nome ou telefone..." oninput="renderizarListaNovaConversa()">
+            </div>
+            <div id="lista-clientes-nova-conversa" style="overflow-y: auto; flex: 1; margin-top: 8px;">
+                <!-- Lista de clientes com telefone -->
+            </div>
+        </div>
+    </div>
 
     <!-- Modal de Edição de Cliente (PUT) -->
     <div id="modal-editar-lead" class="result-box hidden" style="position: fixed; inset: 0; z-index: 999; margin: 0; border-radius: 0; background: rgba(0, 0, 0, 0.8); display: flex; align-items: center; justify-content: center; padding: 16px;">

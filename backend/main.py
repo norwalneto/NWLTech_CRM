@@ -1,6 +1,8 @@
+import json
 import os
-import requests
+from datetime import datetime
 from typing import Optional
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -27,9 +29,12 @@ from buscador import executar_busca_google_maps, formatar_link_whatsapp
 load_dotenv(BASE_DIR / ".env")
 init_storage()
 
+WHATSAPP_STORE_PATH = BASE_DIR / "whatsapp_conversas.json"
+WHATSAPP_CONFIG_PATH = BASE_DIR / "whatsapp_config.json"
+
 app = FastAPI(
     title="NWL Tech CRM & Buscador API",
-    version="1.2.0",
+    version="1.3.0",
     description="Backend híbrido (CSV Raiz + Railway DB) para Mobile CRM, Buscador e WhatsApp Cloud API",
 )
 
@@ -78,9 +83,141 @@ class EnviarMensagemWhatsAppRequest(BaseModel):
     mensagem: str
 
 
+class EnviarTemplateWhatsAppRequest(BaseModel):
+    telefone: str
+    template_nome: str = "hello_world"
+    idioma: str = "pt_BR"
+
+
+class ConfigWhatsAppRequest(BaseModel):
+    verify_token: Optional[str] = ""
+    phone_number_id: Optional[str] = ""
+    waba_id: Optional[str] = ""
+    access_token: Optional[str] = ""
+
+
+def _normalizar_telefone(telefone: str) -> str:
+    digitos = "".join(filter(str.isdigit, str(telefone or "")))
+    if digitos and not digitos.startswith("55") and len(digitos) in (10, 11):
+        return f"55{digitos}"
+    return digitos
+
+
+def _hora_atual() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def _carregar_config_meta() -> dict:
+    salvo = {}
+    if WHATSAPP_CONFIG_PATH.exists():
+        try:
+            salvo = json.loads(WHATSAPP_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            salvo = {}
+
+    return {
+        "verify_token": (os.getenv("WHATSAPP_VERIFY_TOKEN") or salvo.get("verify_token") or "nwltech_verify_token").strip(),
+        "phone_number_id": (os.getenv("WHATSAPP_PHONE_NUMBER_ID") or salvo.get("phone_number_id") or "").strip(),
+        "waba_id": (os.getenv("WHATSAPP_WABA_ID") or salvo.get("waba_id") or "").strip(),
+        "access_token": (os.getenv("WHATSAPP_ACCESS_TOKEN") or salvo.get("access_token") or "").strip(),
+    }
+
+
+def _salvar_config_meta(dados: dict) -> dict:
+    atual = _carregar_config_meta()
+    for chave in ("verify_token", "phone_number_id", "waba_id", "access_token"):
+        valor = (dados.get(chave) or "").strip()
+        if valor:
+            atual[chave] = valor
+        elif chave in dados and dados[chave] == "":
+            atual[chave] = ""
+    WHATSAPP_CONFIG_PATH.write_text(json.dumps(atual, ensure_ascii=False, indent=2), encoding="utf-8")
+    return atual
+
+
+def _carregar_conversas() -> list:
+    if not WHATSAPP_STORE_PATH.exists():
+        return []
+    try:
+        dados = json.loads(WHATSAPP_STORE_PATH.read_text(encoding="utf-8"))
+        return dados if isinstance(dados, list) else []
+    except Exception:
+        return []
+
+
+def _salvar_conversas(conversas: list) -> None:
+    WHATSAPP_STORE_PATH.write_text(json.dumps(conversas, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _buscar_nome_lead_por_telefone(tel_normalizado: str) -> str:
+    if not tel_normalizado:
+        return ""
+    for lead in listar_leads():
+        if _normalizar_telefone(lead.get("telefone") or "") == tel_normalizado:
+            return (lead.get("nome") or "").strip()
+    return ""
+
+
+def _registrar_mensagem_conversa(
+    telefone: str,
+    texto: str,
+    direcao: str = "sent",
+    nome_contato: Optional[str] = None,
+    abrir_janela_24h: Optional[bool] = None,
+    incrementar_nao_lidas: bool = False,
+) -> dict:
+    tel_norm = _normalizar_telefone(telefone) or str(telefone or "").strip()
+    conversas = _carregar_conversas()
+    hora = _hora_atual()
+
+    conversa = next((c for c in conversas if _normalizar_telefone(c.get("telefone") or "") == tel_norm), None)
+
+    if not conversa:
+        nome_resolvido = (nome_contato or "").strip() or _buscar_nome_lead_por_telefone(tel_norm) or (telefone or tel_norm)
+        conversa = {
+            "id": tel_norm or str(int(datetime.now().timestamp())),
+            "nome": nome_resolvido,
+            "telefone": telefone or tel_norm,
+            "ultima_mensagem": texto,
+            "hora": hora,
+            "nao_lidas": 1 if incrementar_nao_lidas else 0,
+            "janela_24h": bool(abrir_janela_24h) if abrir_janela_24h is not None else (direcao == "received"),
+            "mensagens": [],
+        }
+        conversas.insert(0, conversa)
+    else:
+        if nome_contato and nome_contato.strip():
+            conversa["nome"] = nome_contato.strip()
+        conversa["ultima_mensagem"] = texto
+        conversa["hora"] = hora
+        if abrir_janela_24h is not None:
+            conversa["janela_24h"] = bool(abrir_janela_24h)
+        elif direcao == "received":
+            conversa["janela_24h"] = True
+
+        if incrementar_nao_lidas and direcao == "received":
+            conversa["nao_lidas"] = int(conversa.get("nao_lidas") or 0) + 1
+
+        conversas = [conversa] + [c for c in conversas if c.get("id") != conversa.get("id")]
+
+    mensagens = conversa.get("mensagens")
+    if not isinstance(mensagens, list):
+        mensagens = []
+    mensagens.append({
+        "direcao": direcao,
+        "texto": texto,
+        "hora": hora,
+    })
+    conversa["mensagens"] = mensagens
+
+    _salvar_conversas(conversas)
+    return conversa
+
+
 @app.get("/")
 def health_check():
     init_storage()
+    cfg = _carregar_config_meta()
     return {
         "status": "online",
         "servico": "NWL Tech CRM Backend",
@@ -94,9 +231,7 @@ def health_check():
             os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN")
         ),
         "google_api_configurada": bool(os.getenv("GOOGLE_MAPS_API_KEY")),
-        "whatsapp_api_configurada": bool(
-            os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-        ),
+        "whatsapp_api_configurada": bool(cfg.get("access_token") and cfg.get("phone_number_id")),
     }
 
 
@@ -186,7 +321,6 @@ def _executar_atualizacao_lead(lead_id: str, body: AtualizarLeadRequest):
             observacoes=body.observacoes,
         )
     except TypeError:
-        # Fallback caso sua atualizar_lead no database.py aceite apenas (lead_id, status_kanban, observacoes)
         atualizado = atualizar_lead(
             lead_id=lead_id,
             status_kanban=body.status_kanban.upper() if body.status_kanban else None,
@@ -240,25 +374,56 @@ def baixar_csv():
     )
 
 
-# --- WHATSAPP CLOUD API: ENVIO DE MENSAGENS ---
+# --- WHATSAPP CLOUD API: CONFIGURAÇÕES, CONVERSAS E ENVIO ---
+
+@app.get("/api/whatsapp/config")
+def obter_config_whatsapp():
+    cfg = _carregar_config_meta()
+    return {
+        "sucesso": True,
+        "verify_token": cfg.get("verify_token", ""),
+        "phone_number_id": cfg.get("phone_number_id", ""),
+        "waba_id": cfg.get("waba_id", ""),
+        "access_token_configurado": bool(cfg.get("access_token")),
+    }
+
+
+@app.post("/api/whatsapp/config")
+def salvar_config_whatsapp(req: ConfigWhatsAppRequest):
+    cfg = _salvar_config_meta(req.model_dump())
+    return {
+        "sucesso": True,
+        "phone_number_id": cfg.get("phone_number_id", ""),
+        "waba_id": cfg.get("waba_id", ""),
+        "verify_token": cfg.get("verify_token", ""),
+        "access_token_configurado": bool(cfg.get("access_token")),
+    }
+
+
+@app.get("/api/whatsapp/conversas")
+def listar_conversas_whatsapp():
+    conversas = _carregar_conversas()
+    return {"sucesso": True, "total": len(conversas), "conversas": conversas}
+
 
 @app.post("/api/whatsapp/enviar")
 def enviar_mensagem_whatsapp(req: EnviarMensagemWhatsAppRequest):
-    """Dispara mensagens oficiais através da WhatsApp Business Platform (Cloud API)."""
-    token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
-    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    """Dispara mensagens de texto livre através da WhatsApp Business Platform (Cloud API)."""
+    cfg = _carregar_config_meta()
+    token = cfg.get("access_token", "")
+    phone_number_id = cfg.get("phone_number_id", "")
 
     if not token or not phone_number_id:
         raise HTTPException(
             status_code=400,
-            detail="Credenciais do WhatsApp (WHATSAPP_ACCESS_TOKEN ou PHONE_NUMBER_ID) não configuradas no ambiente.",
+            detail="Credenciais do WhatsApp (WHATSAPP_ACCESS_TOKEN ou PHONE_NUMBER_ID) não configuradas.",
         )
 
-    telefone_limpo = "".join(filter(str.isdigit, req.telefone))
-    if not telefone_limpo.startswith("55") and len(telefone_limpo) in (10, 11):
-        telefone_limpo = f"55{telefone_limpo}"
+    telefone_limpo = _normalizar_telefone(req.telefone)
+    if not telefone_limpo:
+        raise HTTPException(status_code=400, detail="Número de telefone inválido.")
 
-    url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+    url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -275,16 +440,155 @@ def enviar_mensagem_whatsapp(req: EnviarMensagemWhatsAppRequest):
         response = requests.post(url, json=payload, headers=headers, timeout=15)
         resposta_meta = response.json()
 
-        if response.status_code != 200:
+        if response.status_code not in (200, 201):
             erro_msg = resposta_meta.get("error", {}).get("message", "Erro desconhecido na API da Meta")
             raise HTTPException(status_code=400, detail=f"Erro Meta WhatsApp: {erro_msg}")
 
-        return {"sucesso": True, "resposta_meta": resposta_meta}
+        conversa = _registrar_mensagem_conversa(
+            telefone=req.telefone,
+            texto=req.mensagem,
+            direcao="sent",
+        )
+        return {"sucesso": True, "resposta_meta": resposta_meta, "conversa": conversa}
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Falha de conexão com a API do WhatsApp: {str(e)}")
+
+
+@app.post("/api/whatsapp/enviar-template")
+def enviar_template_whatsapp(req: EnviarTemplateWhatsAppRequest):
+    """Dispara modelo (template) aprovado na Meta para iniciar conversa fora da janela de 24h."""
+    cfg = _carregar_config_meta()
+    token = cfg.get("access_token", "")
+    phone_number_id = cfg.get("phone_number_id", "")
+
+    if not token or not phone_number_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Credenciais do WhatsApp (WHATSAPP_ACCESS_TOKEN ou PHONE_NUMBER_ID) não configuradas.",
+        )
+
+    telefone_limpo = _normalizar_telefone(req.telefone)
+    if not telefone_limpo:
+        raise HTTPException(status_code=400, detail="Número de telefone inválido.")
+
+    url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": telefone_limpo,
+        "type": "template",
+        "template": {
+            "name": (req.template_nome or "hello_world").strip(),
+            "language": {"code": (req.idioma or "pt_BR").strip()},
+        },
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        resposta_meta = response.json()
+
+        if response.status_code not in (200, 201):
+            erro_msg = resposta_meta.get("error", {}).get("message", "Erro desconhecido na API da Meta")
+            raise HTTPException(status_code=400, detail=f"Erro Meta Template: {erro_msg}")
+
+        texto_historico = f"[Modelo: {req.template_nome}] ({req.idioma})"
+        conversa = _registrar_mensagem_conversa(
+            telefone=req.telefone,
+            texto=texto_historico,
+            direcao="sent",
+        )
+        return {"sucesso": True, "resposta_meta": resposta_meta, "conversa": conversa}
+    except HTTPException:
+        raise
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Falha de conexão com a API do WhatsApp: {str(e)}")
 
 
 # --- WEBHOOK DA META (WHATSAPP) ---
+
+def _validar_token_webhook(hub_mode: Optional[str], hub_verify_token: Optional[str], hub_challenge: Optional[str]):
+    cfg = _carregar_config_meta()
+    token_esperado = cfg.get("verify_token") or "nwltech_verify_token"
+    if hub_mode == "subscribe" and hub_verify_token == token_esperado:
+        return PlainTextResponse(content=hub_challenge or "", status_code=200)
+    raise HTTPException(status_code=403, detail="Token de verificação do Webhook inválido.")
+
+
+async def _processar_evento_webhook(request: Request):
+    try:
+        payload = await request.json()
+
+        for entry in payload.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+
+                contatos_meta = {}
+                for c in value.get("contacts", []) or []:
+                    wa_id = _normalizar_telefone(c.get("wa_id") or "")
+                    nome_perfil = (c.get("profile") or {}).get("name") or ""
+                    if wa_id and nome_perfil:
+                        contatos_meta[wa_id] = nome_perfil
+
+                for msg in value.get("messages", []) or []:
+                    remetente = msg.get("from")
+                    tipo_msg = msg.get("type", "text")
+
+                    if tipo_msg == "text":
+                        texto_msg = (msg.get("text") or {}).get("body", "")
+                    elif tipo_msg == "button":
+                        texto_msg = (msg.get("button") or {}).get("text", "[Botão]")
+                    elif tipo_msg == "interactive":
+                        inter = msg.get("interactive") or {}
+                        texto_msg = (
+                            (inter.get("button_reply") or {}).get("title")
+                            or (inter.get("list_reply") or {}).get("title")
+                            or "[Resposta interativa]"
+                        )
+                    else:
+                        texto_msg = f"[{tipo_msg}]"
+
+                    if remetente:
+                        tel_norm = _normalizar_telefone(remetente)
+                        _registrar_mensagem_conversa(
+                            telefone=remetente,
+                            texto=texto_msg,
+                            direcao="received",
+                            nome_contato=contatos_meta.get(tel_norm),
+                            abrir_janela_24h=True,
+                            incrementar_nao_lidas=True,
+                        )
+                        print(f"[WHATSAPP CHAT] Mensagem recebida de {remetente}: {texto_msg}")
+
+                for status in value.get("statuses", []) or []:
+                    msg_id = status.get("id")
+                    estado = status.get("status")
+                    print(f"[WHATSAPP STATUS] Mensagem {msg_id} atualizada para: {estado}")
+
+        return {"status": "recebido"}
+    except Exception as e:
+        print(f"[ERRO WEBHOOK WHATSAPP]: {e}")
+        return {"status": "erro", "detalhe": str(e)}
+
+
+@app.get("/webhook")
+def verificar_webhook_raiz(
+    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
+    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
+    hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    return _validar_token_webhook(hub_mode, hub_verify_token, hub_challenge)
+
+
+@app.post("/webhook")
+async def receber_eventos_webhook_raiz(request: Request):
+    return await _processar_evento_webhook(request)
+
 
 @app.get("/api/webhook/whatsapp")
 def verificar_webhook_meta(
@@ -293,37 +597,10 @@ def verificar_webhook_meta(
     hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
 ):
     """Validação inicial exigida pelo painel do desenvolvedor da Meta."""
-    token_esperado = os.getenv("WHATSAPP_VERIFY_TOKEN", "nwltech_verify_token")
-    if hub_mode == "subscribe" and hub_verify_token == token_esperado:
-        return PlainTextResponse(content=hub_challenge or "", status_code=200)
-    raise HTTPException(status_code=403, detail="Token de verificação do Webhook inválido.")
+    return _validar_token_webhook(hub_mode, hub_verify_token, hub_challenge)
 
 
 @app.post("/api/webhook/whatsapp")
 async def receber_eventos_whatsapp(request: Request):
     """Processa mensagens recebidas dos clientes e atualizações de entrega."""
-    try:
-        payload = await request.json()
-
-        for entry in payload.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-
-                messages = value.get("messages", [])
-                if messages:
-                    for msg in messages:
-                        remetente = msg.get("from")
-                        texto_msg = msg.get("text", {}).get("body", "")
-                        print(f"[WHATSAPP CHAT] Mensagem recebida de {remetente}: {texto_msg}")
-
-                statuses = value.get("statuses", [])
-                if statuses:
-                    for status in statuses:
-                        msg_id = status.get("id")
-                        estado = status.get("status")
-                        print(f"[WHATSAPP STATUS] Mensagem {msg_id} atualizada para: {estado}")
-
-        return {"status": "recebido"}
-    except Exception as e:
-        print(f"[ERRO WEBHOOK WHATSAPP]: {e}")
-        return {"status": "erro", "detalhe": str(e)}
+    return await _processar_evento_webhook(request)

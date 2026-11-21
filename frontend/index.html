@@ -96,11 +96,16 @@
         <section id="tab-clientes" class="tab-content">
             <div class="kanban-header">
                 <h2><i class="fa-solid fa-address-book"></i> Clientes</h2>
-                <button class="btn-sm" onclick="limparLeadsSemTelefone()" title="Excluir leads sem telefone">
-                    <i class="fa-solid fa-phone-slash"></i> Limpar sem tel
-                </button>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn-primary" style="width: auto; padding: 6px 10px; font-size: 0.8rem;" onclick="abrirModalNovoLead()">
+                        <i class="fa-solid fa-plus"></i> Novo
+                    </button>
+                    <button class="btn-sm" onclick="limparLeadsSemTelefone()" title="Excluir leads sem telefone">
+                        <i class="fa-solid fa-phone-slash"></i> Limpar sem tel
+                    </button>
+                </div>
             </div>
-            <p class="subtitle">Visualize, filtre, edite ou exclua os leads salvos no CRM.</p>
+            <p class="subtitle">Visualize, filtre, cadastre, edite ou exclua os leads salvos no CRM.</p>
 
             <div class="form-card">
                 <div class="input-group">
@@ -382,6 +387,59 @@
             </div>
             <div id="lista-clientes-nova-conversa" style="overflow-y: auto; flex: 1; margin-top: 8px;">
                 <!-- Lista de clientes com telefone -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Cadastro Manual de Cliente (POST /api/leads) -->
+    <div id="modal-novo-lead" class="result-box hidden" style="position: fixed; inset: 0; z-index: 999; margin: 0; border-radius: 0; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; padding: 16px;">
+        <div class="form-card" style="width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto;">
+            <div class="kanban-header" style="margin-bottom: 12px;">
+                <h3><i class="fa-solid fa-user-plus"></i> Cadastrar Cliente</h3>
+                <button class="btn-sm" onclick="fecharModalNovoLead()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <div class="input-group">
+                <label>Nome *</label>
+                <input type="text" id="novo-lead-nome" placeholder="Ex: Clínica Odonto Recife">
+            </div>
+            <div class="input-group">
+                <label>Telefone / WhatsApp (com DDD)</label>
+                <input type="text" id="novo-lead-telefone" placeholder="Ex: 81999999999">
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Cidade</label>
+                    <input type="text" id="novo-lead-cidade" placeholder="Ex: Recife">
+                </div>
+                <div class="input-group">
+                    <label>Nicho</label>
+                    <input type="text" id="novo-lead-nicho" placeholder="Ex: Clínica">
+                </div>
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Status Kanban</label>
+                    <select id="novo-lead-status">
+                        <option value="NOVO">NOVO</option>
+                        <option value="PENDENTE">PENDENTE</option>
+                        <option value="CONTATO">CONTATO</option>
+                        <option value="FECHADO">FECHADO</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Site (opcional)</label>
+                    <input type="text" id="novo-lead-website" placeholder="https://...">
+                </div>
+            </div>
+            <div class="input-group">
+                <label>Observações</label>
+                <textarea id="novo-lead-obs" rows="2" placeholder="Detalhes do cliente..."></textarea>
+            </div>
+
+            <div class="input-row">
+                <button class="btn-sm" onclick="fecharModalNovoLead()">Cancelar</button>
+                <button class="btn-primary" onclick="salvarNovoLeadManual()">Salvar Cliente</button>
             </div>
         </div>
     </div>

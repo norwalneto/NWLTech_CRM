@@ -404,6 +404,71 @@ function renderizarClientes(leads = LEADS_CACHE) {
     }).join("");
 }
 
+// Cadastro Manual de Cliente (POST /api/leads)
+function abrirModalNovoLead() {
+    const campos = [
+        "novo-lead-nome",
+        "novo-lead-telefone",
+        "novo-lead-cidade",
+        "novo-lead-nicho",
+        "novo-lead-website",
+        "novo-lead-obs"
+    ];
+    campos.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+    });
+    const statusEl = document.getElementById("novo-lead-status");
+    if (statusEl) statusEl.value = "NOVO";
+
+    document.getElementById("modal-novo-lead")?.classList.remove("hidden");
+}
+
+function fecharModalNovoLead() {
+    document.getElementById("modal-novo-lead")?.classList.add("hidden");
+}
+
+function salvarNovoLeadManual() {
+    const nome = document.getElementById("novo-lead-nome")?.value.trim() || "";
+    if (!nome) {
+        alert("Informe o nome do cliente.");
+        return;
+    }
+
+    const payload = {
+        nome,
+        telefone: document.getElementById("novo-lead-telefone")?.value.trim() || "",
+        cidade: document.getElementById("novo-lead-cidade")?.value.trim() || "",
+        nicho: document.getElementById("novo-lead-nicho")?.value.trim() || "",
+        website: document.getElementById("novo-lead-website")?.value.trim() || "",
+        status_kanban: document.getElementById("novo-lead-status")?.value || "NOVO",
+        observacoes: document.getElementById("novo-lead-obs")?.value.trim() || ""
+    };
+
+    fetch(`${API_URL}/api/leads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    })
+    .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `Erro HTTP ${res.status}`);
+        return data;
+    })
+    .then(data => {
+        fecharModalNovoLead();
+        if (Array.isArray(data.leads)) {
+            LEADS_CACHE = data.leads;
+            renderizarKanban(LEADS_CACHE);
+            renderizarClientes(LEADS_CACHE);
+            popularSelectClientesEnvio();
+        } else {
+            carregarLeads();
+        }
+    })
+    .catch(err => alert("Erro ao cadastrar cliente: " + (err.message || "Falha de conexão.")));
+}
+
 function abrirModalEditarLead(leadId) {
     const lead = (LEADS_CACHE || []).find(item => String(item.id || item.place_id) === String(leadId));
     if (!lead) return;

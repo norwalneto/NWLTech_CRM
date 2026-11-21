@@ -166,6 +166,12 @@ h2 i {
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+    align-items: center;
+}
+
+.input-row > .btn-primary {
+    flex: 1;
+    width: auto;
 }
 
 .checkbox-group {
@@ -282,6 +288,11 @@ button {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    align-items: start;
+}
+
+#lista-clientes > .lead-card {
+    width: 100%;
 }
 
 .lead-card {
@@ -739,6 +750,7 @@ button {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
+        align-items: stretch;
     }
 }
 

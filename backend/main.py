@@ -89,6 +89,13 @@ class EnviarTemplateWhatsAppRequest(BaseModel):
     idioma: str = "pt_BR"
 
 
+class CriarTemplateWhatsAppRequest(BaseModel):
+    nome: str
+    categoria: str = "MARKETING"
+    idioma: str = "pt_BR"
+    corpo: str
+
+
 class ConfigWhatsAppRequest(BaseModel):
     verify_token: Optional[str] = ""
     phone_number_id: Optional[str] = ""
@@ -508,6 +515,63 @@ def enviar_template_whatsapp(req: EnviarTemplateWhatsAppRequest):
         raise
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Falha de conexão com a API do WhatsApp: {str(e)}")
+
+
+@app.post("/api/whatsapp/criar-template")
+def criar_template_whatsapp(req: CriarTemplateWhatsAppRequest):
+    """Cria um novo modelo de mensagem (template) na WABA via Graph API da Meta."""
+    cfg = _carregar_config_meta()
+    token = cfg.get("access_token", "")
+    waba_id = cfg.get("waba_id", "")
+
+    if not token or not waba_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Configure o WABA ID e o Access Token na aba Ajustes (ou no Railway) antes de criar modelos.",
+        )
+
+    nome_limpo = "".join(c if (c.isalnum() or c == "_") else "_" for c in req.nome.strip().lower()).strip("_")
+    if not nome_limpo:
+        raise HTTPException(status_code=400, detail="Nome do modelo inválido.")
+    if not req.corpo.strip():
+        raise HTTPException(status_code=400, detail="O texto do modelo não pode ficar vazio.")
+
+    url = f"https://graph.facebook.com/v19.0/{waba_id}/message_templates"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "name": nome_limpo,
+        "language": (req.idioma or "pt_BR").strip(),
+        "category": (req.categoria or "MARKETING").strip().upper(),
+        "components": [
+            {
+                "type": "BODY",
+                "text": req.corpo.strip(),
+            }
+        ],
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        resposta_meta = response.json()
+
+        if response.status_code not in (200, 201):
+            erro_msg = resposta_meta.get("error", {}).get("message", "Erro desconhecido ao criar template na Meta")
+            raise HTTPException(status_code=400, detail=f"Erro Meta Template: {erro_msg}")
+
+        return {
+            "sucesso": True,
+            "id_meta": resposta_meta.get("id"),
+            "status_meta": resposta_meta.get("status", "PENDING"),
+            "categoria_meta": resposta_meta.get("category", req.categoria),
+            "resposta_meta": resposta_meta,
+        }
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Falha de conexão com a Graph API da Meta: {str(e)}")
 
 
 # --- WEBHOOK DA META (WHATSAPP) ---

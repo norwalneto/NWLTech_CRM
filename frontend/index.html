@@ -323,6 +323,49 @@
                     <i class="fa-brands fa-facebook"></i> Continuar com o Facebook
                 </button>
             </div>
+
+            <!-- Criar Modelo de Mensagem (Template Meta) -->
+            <div class="form-card" style="margin-top: 14px;">
+                <h3><i class="fa-solid fa-file-circle-plus"></i> Criar Modelo de Mensagem (Template)</h3>
+                <p class="desc-sm">Crie e envie modelos oficiais para aprovação na Meta usando seu WABA ID e Access Token.</p>
+
+                <div class="input-group" style="margin-top: 10px;">
+                    <label>Nome do Modelo (apenas letras minúsculas e _)</label>
+                    <input type="text" id="tpl-nome" placeholder="Ex: boas_vindas_nwl" oninput="this.value = this.value.toLowerCase().replace(/[^a-z0-9_]/g, '_')">
+                </div>
+
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>Categoria</label>
+                        <select id="tpl-categoria">
+                            <option value="MARKETING">MARKETING (Comercial / Prospecção)</option>
+                            <option value="UTILITY">UTILITY (Utilidade / Atendimento)</option>
+                            <option value="AUTHENTICATION">AUTHENTICATION (Código / Verificação)</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Idioma</label>
+                        <select id="tpl-idioma">
+                            <option value="pt_BR">Português (pt_BR)</option>
+                            <option value="en_US">Inglês (en_US)</option>
+                            <option value="es">Espanhol (es)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label>Texto da Mensagem (Body)</label>
+                    <textarea id="tpl-corpo" rows="4" placeholder="Olá! Aqui é da NWL Tech. Gostaríamos de apresentar uma solução digital para sua empresa. Podemos conversar?"></textarea>
+                </div>
+
+                <button class="btn-whatsapp" onclick="criarModeloMeta()">
+                    <i class="fa-solid fa-cloud-arrow-up"></i> Criar Modelo na Meta
+                </button>
+
+                <div id="tpl-resultado-box" class="result-box hidden">
+                    <p id="tpl-resultado-msg" class="desc-sm"></p>
+                </div>
+            </div>
         </section>
 
     </main>

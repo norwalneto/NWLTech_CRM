@@ -769,7 +769,6 @@ function enviarTemplateNaConversa() {
         return data;
     })
     .catch(() => {
-        // Permite registrar no fluxo visual mesmo antes do endpoint estar no backend
         return { simulado: true };
     })
     .then(() => {
@@ -985,6 +984,86 @@ function enviarMensagemWhatsApp() {
         }
     })
     .catch(err => alert("Erro ao disparar mensagem: " + (err.message || "Falha de conexão.")));
+}
+
+// ==========================================
+// CRIAR MODELO DE MENSAGEM NA META (CONFIGURAÇÕES)
+// ==========================================
+
+function criarModeloMeta() {
+    const nomeInput = document.getElementById("tpl-nome");
+    const catSelect = document.getElementById("tpl-categoria");
+    const langSelect = document.getElementById("tpl-idioma");
+    const corpoInput = document.getElementById("tpl-corpo");
+    const resBox = document.getElementById("tpl-resultado-box");
+    const resMsg = document.getElementById("tpl-resultado-msg");
+
+    const nome = (nomeInput?.value || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    const categoria = catSelect?.value || "MARKETING";
+    const idioma = langSelect?.value || "pt_BR";
+    const corpo = (corpoInput?.value || "").trim();
+
+    if (!nome) {
+        alert("Informe o nome do modelo (ex: apresentacao_nwl).");
+        return;
+    }
+    if (!corpo) {
+        alert("Digite o texto da mensagem do modelo.");
+        return;
+    }
+
+    if (resBox) resBox.classList.remove("hidden");
+    if (resMsg) resMsg.innerText = "Enviando modelo para a Meta Cloud API...";
+
+    fetch(`${API_URL}/api/whatsapp/criar-template`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            nome,
+            categoria,
+            idioma,
+            corpo
+        })
+    })
+    .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.detail || `Erro HTTP ${res.status}`);
+        }
+        return data;
+    })
+    .then(data => {
+        const statusMeta = data.status_meta || "PENDING";
+        if (resMsg) {
+            resMsg.innerHTML = `<span style="color: var(--accent-green);">Modelo <strong>${escaparHtml(nome)}</strong> criado com sucesso! Status Meta: <strong>${escaparHtml(statusMeta)}</strong>.</span>`;
+        }
+
+        WA_TEMPLATES_INFO[nome] = {
+            label: nome,
+            lang: idioma,
+            preview: corpo
+        };
+
+        ["wa-chat-template-select", "envio-template-nome"].forEach(selectId => {
+            const sel = document.getElementById(selectId);
+            if (sel && !Array.from(sel.options).some(opt => opt.value === nome)) {
+                const option = document.createElement("option");
+                option.value = nome;
+                option.text = `${nome} (${idioma})`;
+                sel.appendChild(option);
+            }
+        });
+
+        atualizarPreviewTemplateChat();
+
+        if (nomeInput) nomeInput.value = "";
+        if (corpoInput) corpoInput.value = "";
+    })
+    .catch(err => {
+        if (resMsg) {
+            resMsg.innerHTML = `<span style="color: var(--danger);">Erro ao criar modelo: ${escaparHtml(err.message || "Falha de conexão.")}</span>`;
+        }
+    });
 }
 
 function iniciarEmbeddedSignup() {
